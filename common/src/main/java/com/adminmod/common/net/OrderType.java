@@ -48,14 +48,32 @@ public enum OrderType {
     /** Moderation tab: remove a punishment. Arguments: player, punishmentId. */
     PARDON(20, PermissionLevel.MODERATE),
     /** Any tab: lightweight server status. No arguments. */
-    STATUS(21, PermissionLevel.VIEW);
+    STATUS(21, PermissionLevel.VIEW),
+    /** Pairing tab: pairing subsystem status. No arguments. */
+    PAIRING_STATUS(22, PermissionLevel.VIEW),
+    /** Pairing tab: mint a one-time pairing key. Arguments: label. */
+    PAIRING_GENERATE(23, PermissionLevel.PAIRING),
+    /** Pairing tab: list authorised clients. No arguments. */
+    PAIRING_LIST(24, PermissionLevel.VIEW),
+    /** Pairing tab: revoke a paired client. Arguments: clientId. */
+    PAIRING_REVOKE(25, PermissionLevel.PAIRING),
+    /** Pairing tab: active sessions. No arguments. */
+    SESSION_LIST(26, PermissionLevel.VIEW),
+    /** Pairing tab: authentication history. No arguments. */
+    AUTH_HISTORY(27, PermissionLevel.VIEW),
+    /** Pairing tab: rotate the shared password or a client secret. Arguments: target. */
+    CREDENTIAL_ROTATE(28, PermissionLevel.PAIRING),
+    /** Pairing tab: grant OP to the authenticated owner. No arguments. */
+    OP_GRANT_OWNER(29, PermissionLevel.PAIRING);
 
     /** Coarse capability required to run the order; refined by the server permission model. */
     public enum PermissionLevel {
         VIEW,
         MODERATE,
         OP_MANAGE,
-        CONSOLE
+        CONSOLE,
+        /** Access-management orders: owner or an explicitly authorised administrator. */
+        PAIRING
     }
 
     private final int id;

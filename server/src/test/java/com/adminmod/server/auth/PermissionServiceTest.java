@@ -91,46 +91,60 @@ class PermissionServiceTest {
         int level = permissions.effectiveLevel(PLAYER, "Alex", 0);
         assertEquals(0, level);
         // Read-only views are available to any authenticated session (the handshake already
-        // required the operator password), but no state-changing order is.
-        assertTrue(permissions.allows(OrderType.LIST_PLAYERS, level, false));
-        assertFalse(permissions.allows(OrderType.BAN, level, false));
-        assertFalse(permissions.allows(OrderType.EXECUTE_COMMAND, level, false));
-        assertFalse(permissions.allows(OrderType.OP_GRANT, level, false));
+        // required a credential), but no state-changing order is.
+        assertTrue(permissions.allows(OrderType.LIST_PLAYERS, PermissionService.Role.VIEWER));
+        assertFalse(permissions.allows(OrderType.BAN, PermissionService.Role.VIEWER));
+        assertFalse(permissions.allows(OrderType.EXECUTE_COMMAND, PermissionService.Role.VIEWER));
+        assertFalse(permissions.allows(OrderType.OP_GRANT, PermissionService.Role.VIEWER));
     }
 
     @Test
-    void anOperatorMayModerateButNotUseTheConsole() {
+    void anOperatorIsAnAdministratorAndMayModerateButNotUseTheConsole() {
         AdminConfig config = config();
         PermissionService permissions = new PermissionService(config);
-        assertTrue(permissions.allows(OrderType.BAN, 4, false));
-        // Console and OP management are reserved for the owner, not merely for an operator.
-        assertFalse(permissions.allows(OrderType.EXECUTE_COMMAND, 4, false));
-        assertFalse(permissions.allows(OrderType.OP_GRANT, 4, false));
+        // A live level of 4 with no owner match resolves to the administrator role.
+        assertEquals(PermissionService.Role.ADMINISTRATOR, permissions.role(PLAYER, 4));
+        assertTrue(permissions.allows(OrderType.BAN, PermissionService.Role.ADMINISTRATOR));
+        assertTrue(permissions.allows(OrderType.PAIRING_GENERATE, PermissionService.Role.ADMINISTRATOR));
+        // Console and OP management are reserved for the owner, not merely for an administrator.
+        assertFalse(permissions.allows(OrderType.EXECUTE_COMMAND, PermissionService.Role.ADMINISTRATOR));
+        assertFalse(permissions.allows(OrderType.OP_GRANT, PermissionService.Role.ADMINISTRATOR));
+    }
+
+    @Test
+    void aModeratorMayModerateButNotAdminister() {
+        AdminConfig config = config();
+        PermissionService permissions = new PermissionService(config);
+        assertEquals(PermissionService.Role.MODERATOR, permissions.role(PLAYER, config.permissions.moderateLevel));
+        assertTrue(permissions.allows(OrderType.KICK, PermissionService.Role.MODERATOR));
+        assertFalse(permissions.allows(OrderType.PAIRING_GENERATE, PermissionService.Role.MODERATOR));
+        assertFalse(permissions.allows(OrderType.EXECUTE_COMMAND, PermissionService.Role.MODERATOR));
     }
 
     @Test
     void theOwnerMayUseTheConsoleAndManageOperators() {
         AdminConfig config = config();
         PermissionService permissions = new PermissionService(config);
-        assertTrue(permissions.allows(OrderType.EXECUTE_COMMAND, 4, true));
-        assertTrue(permissions.allows(OrderType.OP_GRANT, 4, true));
+        assertTrue(permissions.allows(OrderType.EXECUTE_COMMAND, PermissionService.Role.OWNER));
+        assertTrue(permissions.allows(OrderType.OP_GRANT, PermissionService.Role.OWNER));
+        assertTrue(permissions.allows(OrderType.PAIRING_REVOKE, PermissionService.Role.OWNER));
     }
 
     @Test
     void disablingRemoteConsoleTakesEffectImmediately() {
         AdminConfig config = config();
         PermissionService permissions = new PermissionService(config);
-        assertTrue(permissions.allows(OrderType.EXECUTE_COMMAND, 4, true));
+        assertTrue(permissions.allows(OrderType.EXECUTE_COMMAND, PermissionService.Role.OWNER));
         config.remoteAdmin.allowRemoteConsole = false;
-        assertFalse(permissions.allows(OrderType.EXECUTE_COMMAND, 4, true));
+        assertFalse(permissions.allows(OrderType.EXECUTE_COMMAND, PermissionService.Role.OWNER));
     }
 
     @Test
     void disablingOpManagementTakesEffectImmediately() {
         AdminConfig config = config();
         PermissionService permissions = new PermissionService(config);
-        assertTrue(permissions.allows(OrderType.OP_GRANT, 4, true));
+        assertTrue(permissions.allows(OrderType.OP_GRANT, PermissionService.Role.OWNER));
         config.remoteAdmin.allowOpManagement = false;
-        assertFalse(permissions.allows(OrderType.OP_GRANT, 4, true));
+        assertFalse(permissions.allows(OrderType.OP_GRANT, PermissionService.Role.OWNER));
     }
 }

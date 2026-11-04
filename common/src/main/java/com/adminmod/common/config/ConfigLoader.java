@@ -234,6 +234,18 @@ public final class ConfigLoader {
         if (config.remoteAdmin.vaultDirectory == null || config.remoteAdmin.vaultDirectory.isBlank()) {
             config.remoteAdmin.vaultDirectory = new AdminConfig.RemoteAdmin().vaultDirectory;
         }
+        clampLong(report, "remoteAdmin.pairingKeyTtlSeconds", config.remoteAdmin.pairingKeyTtlSeconds, 30L, 86_400L, v -> config.remoteAdmin.pairingKeyTtlSeconds = v);
+        clampInt(report, "remoteAdmin.pairingKeyLength", config.remoteAdmin.pairingKeyLength, 12, 128, v -> config.remoteAdmin.pairingKeyLength = v);
+        clampInt(report, "remoteAdmin.clientSecretLength", config.remoteAdmin.clientSecretLength, 24, 128, v -> config.remoteAdmin.clientSecretLength = v);
+        clampInt(report, "remoteAdmin.authFailureLimit", config.remoteAdmin.authFailureLimit, 1, 1_000, v -> config.remoteAdmin.authFailureLimit = v);
+        clampLong(report, "remoteAdmin.authLockoutSeconds", config.remoteAdmin.authLockoutSeconds, 10L, 86_400L, v -> config.remoteAdmin.authLockoutSeconds = v);
+        clampInt(report, "remoteAdmin.authHistoryLimit", config.remoteAdmin.authHistoryLimit, 10, 10_000, v -> config.remoteAdmin.authHistoryLimit = v);
+        if (config.remoteAdmin.clientRegistryFile == null || config.remoteAdmin.clientRegistryFile.isBlank()) {
+            config.remoteAdmin.clientRegistryFile = new AdminConfig.RemoteAdmin().clientRegistryFile;
+        }
+        if (config.remoteAdmin.allowedClientBuilds == null) {
+            config.remoteAdmin.allowedClientBuilds = List.of();
+        }
 
         clampInt(report, "permissions.viewLevel", config.permissions.viewLevel, 0, 4, v -> config.permissions.viewLevel = v);
         clampInt(report, "permissions.moderateLevel", config.permissions.moderateLevel, 0, 4, v -> config.permissions.moderateLevel = v);

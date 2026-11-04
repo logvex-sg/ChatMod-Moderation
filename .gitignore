@@ -36,3 +36,4 @@ Thumbs.db
 
 # Agent scratch
 .agent_tmp/
+.openhands/

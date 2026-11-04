@@ -16,6 +16,8 @@ public interface Message {
             case ORDER_RESULT -> OrderResultMessage.read(reader);
             case SNAPSHOT -> SnapshotMessage.read(reader);
             case CHAT_BRIDGE_STATUS -> ChatBridgeStatusMessage.read(reader);
+            case PAIRING_REQUEST -> PairingRequestMessage.read(reader);
+            case PAIRING_RESULT -> PairingResultMessage.read(reader);
         };
         if (reader.hasRemaining()) {
             throw new ProtocolException("trailing bytes in " + type);

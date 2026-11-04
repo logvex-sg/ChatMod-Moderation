@@ -45,6 +45,31 @@ public final class PasswordVault {
         return new PasswordVault(verifier);
     }
 
+    /** Wraps an already-derived verifier, used when the password is rotated. */
+    public static PasswordVault fromVerifier(byte[] verifier) {
+        if (verifier == null || verifier.length != 32) {
+            throw new IllegalArgumentException("verifier must be 32 bytes");
+        }
+        return new PasswordVault(verifier.clone());
+    }
+
+    /**
+     * Generates a high-entropy secret from the password alphabet.
+     *
+     * <p>Used for one-time pairing keys and paired-client secrets as well as the operator password,
+     * so every generated credential has the same shape and the same entropy guarantee.
+     */
+    public static String generateSecret(int length) {
+        if (length <= 0) {
+            throw new IllegalArgumentException("length must be positive");
+        }
+        StringBuilder sb = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            sb.append(PASSWORD_ALPHABET.charAt(RANDOM.nextInt(PASSWORD_ALPHABET.length())));
+        }
+        return sb.toString();
+    }
+
     public void save(Path file) throws IOException {
         Files.createDirectories(file.getParent());
         writeRestricted(file, Base64.getEncoder().encodeToString(verifier));

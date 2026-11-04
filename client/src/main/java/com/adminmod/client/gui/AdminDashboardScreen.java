@@ -3,6 +3,7 @@ package com.adminmod.client.gui;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.adminmod.client.gui.tab.AccessTab;
 import com.adminmod.client.gui.tab.ChatBridgeTab;
 import com.adminmod.client.gui.tab.ConsoleTab;
 import com.adminmod.client.gui.tab.DashboardTab;
@@ -53,6 +54,7 @@ public final class AdminDashboardScreen extends Screen {
             tabs.add(new OpTab(this));
             tabs.add(new ModerationTab(this));
             tabs.add(new ChatBridgeTab(this));
+            tabs.add(new AccessTab(this));
             tabs.add(new SettingsTab(this));
             active = tabs.get(0);
         }

@@ -262,6 +262,36 @@ public final class AdminConfig {
          * live in; the password file inside is readable only by the server process owner.
          */
         public String vaultDirectory = "H3h12n3jk12n3j123b12k312jhkh312v3h1gefrjkdnoip4235jk235k2nme";
+
+        /** Whether the shared operator password may be used to authenticate a session. */
+        public boolean allowPasswordAuth = true;
+        /** Whether one-time pairing keys may be redeemed to enrol a new client. */
+        public boolean allowPairing = true;
+        /**
+         * When true, only a paired client may authenticate: the shared password is refused. This is
+         * the "private client authorization" switch, and it is off by default so an existing server
+         * keeps working with the password until its operator pairs a client.
+         */
+        public boolean requirePairedClient = false;
+        /** How long a generated pairing key stays redeemable, in seconds. */
+        public long pairingKeyTtlSeconds = 900L;
+        /** Number of characters in a generated pairing key. */
+        public int pairingKeyLength = 24;
+        /** Number of characters in a paired client's long-lived secret. */
+        public int clientSecretLength = 40;
+        /**
+         * Client build ids the protocol accepts. Empty means every build is accepted, which is the
+         * default; the check is a compatibility gate, never an authorization decision.
+         */
+        public List<String> allowedClientBuilds = List.of();
+        /** Failed authentications from one address before it is locked out. */
+        public int authFailureLimit = 5;
+        /** How long an address stays locked out after too many failures, in seconds. */
+        public long authLockoutSeconds = 300L;
+        /** Relative to the server run directory; holds paired clients and pending pairing keys. */
+        public String clientRegistryFile = "config/adminmod-clients.json";
+        /** Number of authentication events retained for the dashboard. */
+        public int authHistoryLimit = 200;
     }
 
     public static final class Permissions {

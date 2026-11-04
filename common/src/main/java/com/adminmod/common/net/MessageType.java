@@ -7,7 +7,11 @@ public enum MessageType {
     ORDER(2),
     ORDER_RESULT(3),
     SNAPSHOT(4),
-    CHAT_BRIDGE_STATUS(5);
+    CHAT_BRIDGE_STATUS(5),
+    /** Encrypted client-to-server pairing request. */
+    PAIRING_REQUEST(6),
+    /** Encrypted server-to-client pairing answer, carrying the issued client credential. */
+    PAIRING_RESULT(7);
 
     private final int id;
 

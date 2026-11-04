@@ -92,13 +92,17 @@ class WireFormatTest {
 
     @Test
     void everyMessageTypeRoundTrips() {
-        assertRoundTrip(new HandshakeMessage(1, "1.0.0", new byte[HandshakeMessage.NONCE_LENGTH]));
-        assertRoundTrip(new HandshakeResultMessage(1, "1.0.0", new byte[HandshakeMessage.NONCE_LENGTH],
-                HandshakeResultMessage.STATUS_OK));
+        assertRoundTrip(new HandshakeMessage(1, "adminmod/1.0.0", AuthMode.PASSWORD.id(), "",
+                new byte[HandshakeMessage.NONCE_LENGTH]));
+        assertRoundTrip(new HandshakeResultMessage(1, "1.0.0", "adminmod/1.0.0",
+                new byte[HandshakeMessage.NONCE_LENGTH], HandshakeResultMessage.STATUS_OK,
+                (1 << AuthMode.PASSWORD.id()) | (1 << AuthMode.CLIENT_SECRET.id())));
         assertRoundTrip(new OrderMessage(3, OrderType.BAN, List.of("Steve", "3600", "spam")));
         assertRoundTrip(new OrderResultMessage(3, true, "banned", "{\"id\":5}"));
         assertRoundTrip(new SnapshotMessage("players", "[{\"name\":\"Alex\"}]"));
         assertRoundTrip(new ChatBridgeStatusMessage("{\"ok\":true}"));
+        assertRoundTrip(new PairingRequestMessage(4, "Alex@localhost", "adminmod/1.0.0"));
+        assertRoundTrip(new PairingResultMessage(4, true, "paired as c1", "c1", "secret-value"));
     }
 
     private void assertRoundTrip(Message message) {

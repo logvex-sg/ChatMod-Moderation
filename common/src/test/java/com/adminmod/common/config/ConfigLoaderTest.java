@@ -61,6 +61,36 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void pairingSettingsAreClampedToSafeBounds(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("admin-mod.json");
+        Files.writeString(file, """
+                {
+                  "remoteAdmin": {
+                    "pairingKeyTtlSeconds": 0,
+                    "pairingKeyLength": 1,
+                    "clientSecretLength": 1,
+                    "authFailureLimit": 0,
+                    "authLockoutSeconds": 0,
+                    "authHistoryLimit": 1
+                  }
+                }
+                """);
+
+        ConfigLoader.ValidationReport report = new ConfigLoader.ValidationReport();
+        AdminConfig config = ConfigLoader.load(file, report);
+
+        // A zero TTL or a one-character secret would be a security hole, so the loader raises them
+        // to their floors rather than honouring the file.
+        assertTrue(config.remoteAdmin.pairingKeyTtlSeconds >= 30L);
+        assertTrue(config.remoteAdmin.pairingKeyLength >= 12);
+        assertTrue(config.remoteAdmin.clientSecretLength >= 24);
+        assertTrue(config.remoteAdmin.authFailureLimit >= 1);
+        assertTrue(config.remoteAdmin.authLockoutSeconds >= 10L);
+        assertTrue(config.remoteAdmin.authHistoryLimit >= 10);
+        assertFalse(report.notes().isEmpty(), "each correction should be reported");
+    }
+
+    @Test
     void aMalformedFileIsNotRewrittenAsAFreshDefault(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("admin-mod.json");
         Files.writeString(file, "{ this is not json ");

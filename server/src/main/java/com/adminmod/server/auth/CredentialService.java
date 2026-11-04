@@ -27,8 +27,8 @@ public final class CredentialService {
     private static final String PASSWORD_FILE = "password.txt";
 
     private final Path directory;
-    private final PasswordVault vault;
-    private final char[] password;
+    private PasswordVault vault;
+    private char[] password;
 
     private CredentialService(Path directory, PasswordVault vault, char[] password) {
         this.directory = directory;
@@ -81,5 +81,27 @@ public final class CredentialService {
     /** True when a verifier file exists on disk. */
     public boolean isPersistent() {
         return Files.exists(directory.resolve(VERIFIER_FILE));
+    }
+
+    /**
+     * Replaces the operator password with a freshly generated one.
+     *
+     * <p>A new verifier and password are generated together and both files are rewritten, so the
+     * verifier and the displayed password stay consistent. Every existing session is invalidated
+     * once the operator re-authenticates with the new password. The previous password is overwritten
+     * in memory before it is dropped.
+     *
+     * @return the new password, to be shown once in the client panel
+     */
+    public synchronized String rotate() throws IOException {
+        PasswordVault.Created created = PasswordVault.create();
+        created.vault().save(directory.resolve(VERIFIER_FILE));
+        PasswordVault.writeRestricted(directory.resolve(PASSWORD_FILE), new String(created.password()));
+        if (password != null) {
+            java.util.Arrays.fill(password, '\0');
+        }
+        this.password = created.password().clone();
+        this.vault = created.vault();
+        return new String(this.password);
     }
 }

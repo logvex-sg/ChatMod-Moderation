@@ -17,9 +17,13 @@ import com.adminmod.common.model.Json;
 import com.adminmod.common.model.PlayerSummary;
 import com.adminmod.common.model.Punishment;
 import com.adminmod.common.model.PunishmentType;
+import com.adminmod.common.net.AdminProtocol;
 import com.adminmod.common.net.OrderMessage;
 import com.adminmod.common.net.OrderResultMessage;
+import com.adminmod.common.security.ClientRegistry;
+import com.adminmod.server.auth.AuthHistory;
 import com.adminmod.server.auth.CredentialService;
+import com.adminmod.server.auth.PairingService;
 import com.adminmod.server.auth.PermissionService;
 import com.adminmod.server.chat.ChatBridgeService;
 import com.adminmod.server.moderation.ModerationService;
@@ -59,6 +63,8 @@ public final class RemoteRequestHandler {
     private final ModerationService moderation;
     private final ChatBridgeService chatBridge;
     private final CredentialService credentials;
+    private PairingService pairing;
+    private SessionManager sessions;
 
     public RemoteRequestHandler(MinecraftServer server, AdminConfig config, Path configPath,
             PermissionService permissions, ModerationService moderation, ChatBridgeService chatBridge,
@@ -70,6 +76,16 @@ public final class RemoteRequestHandler {
         this.moderation = moderation;
         this.chatBridge = chatBridge;
         this.credentials = credentials;
+    }
+
+    /** Injected after construction, because the pairing service and sessions are built together. */
+    public void setPairing(PairingService pairing) {
+        this.pairing = pairing;
+    }
+
+    /** Injected after construction so the dashboard can list live sessions and auth history. */
+    public void setSessions(SessionManager sessions) {
+        this.sessions = sessions;
     }
 
     /** Live permission level of a connected player: 4 for operators, otherwise 0. */
@@ -111,6 +127,14 @@ public final class RemoteRequestHandler {
                 case SERVER_SETTINGS -> serverSettings(order);
                 case UPDATE_SETTING -> updateSetting(order, staffUuid, staffName);
                 case STATUS -> status(order);
+                case PAIRING_STATUS -> pairingStatus(order);
+                case PAIRING_GENERATE -> pairingGenerate(order, staffName);
+                case PAIRING_LIST -> pairingList(order);
+                case PAIRING_REVOKE -> pairingRevoke(order, staffName);
+                case SESSION_LIST -> sessionList(order);
+                case AUTH_HISTORY -> authHistory(order);
+                case CREDENTIAL_ROTATE -> credentialRotate(order, staffName);
+                case OP_GRANT_OWNER -> grantOwnerOp(order, staffUuid, staffName);
             };
         } catch (IllegalArgumentException e) {
             return new OrderResultMessage(order.requestId(), false, e.getMessage());
@@ -567,12 +591,189 @@ public final class RemoteRequestHandler {
         return success(order, "ok", Json.write(root));
     }
 
-    // ------------------------------------------------------------------ helpers
+    // ------------------------------------------------------------------ pairing and access
 
-    /** Reveals the generated password; only the owner may read it, and only through the handshake. */
-    public String revealPassword() {
-        return credentials.password();
+    private OrderResultMessage pairingStatus(OrderMessage order) {
+        JsonObject root = new JsonObject();
+        root.addProperty("enabled", config.remoteAdmin.allowPairing);
+        root.addProperty("passwordAuth", config.remoteAdmin.allowPasswordAuth
+                && !config.remoteAdmin.requirePairedClient);
+        root.addProperty("requirePairedClient", config.remoteAdmin.requirePairedClient);
+        root.addProperty("pairedClients", pairing == null ? 0 : pairing.clientCount());
+        root.addProperty("pendingKeys", pairing == null ? 0 : pairing.pendingKeyCount());
+        root.addProperty("activeSessions", sessions == null ? 0 : sessions.authenticatedSessions());
+        root.addProperty("keyTtlSeconds", config.remoteAdmin.pairingKeyTtlSeconds);
+        root.addProperty("serverBuildId", AdminProtocol.BUILD_ID);
+        return success(order, "ok", Json.write(root));
     }
+
+    private OrderResultMessage pairingGenerate(OrderMessage order, String staffName) {
+        if (pairing == null) {
+            return failure(order, "pairing is not available");
+        }
+        try {
+            PairingService.IssuedKey issued = pairing.issueKey(staffName);
+            JsonObject root = new JsonObject();
+            root.addProperty("key", issued.key());
+            root.addProperty("expiresAt", issued.expiresAt());
+            root.addProperty("ttlSeconds", config.remoteAdmin.pairingKeyTtlSeconds);
+            return success(order, "pairing key issued", Json.write(root));
+        } catch (IOException e) {
+            return failure(order, "the pairing key could not be persisted");
+        }
+    }
+
+    private OrderResultMessage pairingList(OrderMessage order) {
+        JsonObject root = new JsonObject();
+        JsonArray array = new JsonArray();
+        if (pairing != null) {
+            for (ClientRegistry.Client client : pairing.registry().clients()) {
+                JsonObject object = new JsonObject();
+                object.addProperty("id", client.id());
+                object.addProperty("label", client.label());
+                object.addProperty("ownerName", client.ownerName());
+                object.addProperty("buildId", client.buildId());
+                object.addProperty("pairedAt", client.pairedAt());
+                object.addProperty("lastSeenAt", client.lastSeenAt());
+                array.add(object);
+            }
+        }
+        root.addProperty("count", array.size());
+        root.add("clients", array);
+        return success(order, "ok", Json.write(root));
+    }
+
+    private OrderResultMessage pairingRevoke(OrderMessage order, String staffName) {
+        if (pairing == null) {
+            return failure(order, "pairing is not available");
+        }
+        String clientId = order.argument(0).trim();
+        if (clientId.isEmpty()) {
+            return failure(order, "no client id given");
+        }
+        try {
+            boolean removed = pairing.revoke(clientId);
+            // Any live session belonging to the revoked client is dropped immediately, so
+            // revocation takes effect without waiting for the session to expire.
+            int closed = closeSessionsFor(clientId);
+            if (!removed) {
+                return failure(order, "no such client: " + clientId);
+            }
+            return success(order, "revoked " + clientId + (closed > 0 ? " (" + closed + " session(s) closed)" : ""));
+        } catch (IOException e) {
+            return failure(order, "the registry could not be written");
+        }
+    }
+
+    /** Closes authenticated sessions that belong to a revoked client id. @return the count closed. */
+    private int closeSessionsFor(String clientId) {
+        if (sessions == null) {
+            return 0;
+        }
+        int closed = 0;
+        for (RemoteSession session : sessions.activeSessions()) {
+            if (clientId.equals(session.authenticatedClientId()) && session.isAuthenticated()) {
+                sessions.close(session.playerUuid());
+                closed++;
+            }
+        }
+        return closed;
+    }
+
+    private OrderResultMessage sessionList(OrderMessage order) {
+        JsonObject root = new JsonObject();
+        JsonArray array = new JsonArray();
+        if (sessions != null) {
+            for (RemoteSession session : sessions.activeSessions()) {
+                JsonObject object = new JsonObject();
+                object.addProperty("player", session.playerName());
+                object.addProperty("uuid", session.playerUuid().toString());
+                object.addProperty("authenticated", session.isAuthenticated());
+                object.addProperty("mode", session.authMode().name());
+                object.addProperty("clientId", session.authenticatedClientId());
+                object.addProperty("owner", session.isOwner());
+                object.addProperty("idleMillis", System.currentTimeMillis() - session.lastActivityMillis());
+                array.add(object);
+            }
+        }
+        root.addProperty("count", array.size());
+        root.add("sessions", array);
+        return success(order, "ok", Json.write(root));
+    }
+
+    private OrderResultMessage authHistory(OrderMessage order) {
+        JsonObject root = new JsonObject();
+        JsonArray array = new JsonArray();
+        if (sessions != null) {
+            for (AuthHistory.Event event : sessions.history().recent()) {
+                JsonObject object = new JsonObject();
+                object.addProperty("timestamp", event.timestamp());
+                object.addProperty("actor", event.actor());
+                object.addProperty("action", event.action());
+                object.addProperty("success", event.success());
+                object.addProperty("detail", event.detail());
+                array.add(object);
+            }
+        }
+        root.addProperty("count", array.size());
+        root.add("events", array);
+        return success(order, "ok", Json.write(root));
+    }
+
+    /**
+     * Rotates a credential.
+     *
+     * <p>The target is either {@code password} for the shared operator password, or a paired client
+     * id for that client's secret. The new value is returned once and never logged; the caller shows
+     * it in the client panel.
+     */
+    private OrderResultMessage credentialRotate(OrderMessage order, String staffName) {
+        String target = order.argument(0).trim();
+        if (target.equalsIgnoreCase("password")) {
+            try {
+                String fresh = credentials.rotate();
+                return success(order, "the operator password was rotated",
+                        Json.write(java.util.Map.of("target", "password", "value", fresh)));
+            } catch (IOException e) {
+                return failure(order, "the password could not be written");
+            }
+        }
+        if (pairing == null) {
+            return failure(order, "pairing is not available");
+        }
+        try {
+            String secret = pairing.rotateClientSecret(target);
+            if (secret == null) {
+                return failure(order, "no such client: " + target);
+            }
+            // Rotating a client's secret invalidates its sessions, so close them now.
+            closeSessionsFor(target);
+            return success(order, "the client secret was rotated",
+                    Json.write(java.util.Map.of("target", target, "value", secret)));
+        } catch (IOException e) {
+            return failure(order, "the registry could not be written");
+        }
+    }
+
+    /**
+     * Grants operator to the authenticated owner.
+     *
+     * <p>The target is never taken from the request: it is always the connecting player, who has
+     * already been proven to be the owner. This is the one path that lets the owner restore their
+     * own OP level without a console.
+     */
+    private OrderResultMessage grantOwnerOp(OrderMessage order, UUID staffUuid, String staffName) {
+        ServerPlayerEntity player = server.getPlayerManager().getPlayer(staffUuid);
+        if (player == null) {
+            return failure(order, "the requesting player is not online");
+        }
+        server.getPlayerManager().addToOperators(player.getGameProfile());
+        server.getPlayerManager().sendCommandTree(player);
+        player.sendMessage(Text.of("You are now an operator"), false);
+        return success(order, "granted OP to the owner");
+    }
+
+    // ------------------------------------------------------------------ helpers
 
     private Optional<ServerPlayerEntity> onlinePlayer(String name) {
         if (name == null || name.isBlank()) {

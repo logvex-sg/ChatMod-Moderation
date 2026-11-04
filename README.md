@@ -183,8 +183,60 @@ first operator who connects claim ownership, or set it explicitly:
 "remoteAdmin": { "ownerUuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5" }
 ```
 
-Only the owner UUID may use the console and OP management. Other players are limited by the
-permission levels in `permissions`.
+Only the owner UUID may use the console and OP management. Administrators (players whose live
+Minecraft permission level is at least `permissions.adminLevel`) may moderate and manage pairing;
+moderators (at least `moderateLevel`, or named in `permissions.moderators`) may moderate.
+
+### 6.1 Private client authorization (pairing)
+
+The password is a bootstrap credential: anyone who reads it can authenticate. To bind access to
+specific machines instead, pair each client. A paired client authenticates with its own secret,
+and the shared password can then be switched off entirely.
+
+**Pair a client**
+
+1. On the server console (or as an authenticated owner in the **Access** tab), run:
+
+   ```
+   /adminmod pair
+   ```
+
+   The server prints a single-use key and its lifetime. Only a verifier of the key is stored, so
+   copy it now — it cannot be shown again.
+
+2. In the client dashboard open **Settings**, paste the key into the credential field and press
+   **Pair this client**. The client redeems the key, receives a client secret, stores it under
+   `config/adminmod/adminmod-client.json` (owner-only) and immediately re-authenticates with it.
+
+3. From then on the client authenticates with the stored secret. **Settings → Use stored key**
+   reconnects without retyping anything.
+
+**Require pairing**
+
+```json
+"remoteAdmin": {
+  "allowPasswordAuth": true,
+  "requirePairedClient": false
+}
+```
+
+Set `requirePairedClient` to `true` to refuse the shared password: only paired clients may then
+authenticate. Set `allowPasswordAuth` to `false` to disable the password path explicitly.
+
+**Manage paired clients** — the **Access** tab (owner or administrator) lists paired clients,
+live sessions and the authentication history, and can:
+
+- generate further pairing keys,
+- **revoke** a client (its live sessions are closed immediately),
+- **rotate** the operator password or a single client's secret, shown once.
+
+**Key rotation and revocation**
+
+| Credential | Rotate | Revoke |
+| --- | --- | --- |
+| Operator password | Access tab → *Rotate password*, or delete `credential.dat` and restart | set `allowPasswordAuth` / `requirePairedClient` |
+| Client secret | Access tab → *Rotate* on the client row | Access tab → *Revoke*, or delete `config/adminmod-clients.json` |
+| Pairing key | keys expire automatically (`pairingKeyTtlSeconds`) and are single use | — |
 
 ---
 
@@ -300,7 +352,18 @@ permission levels in `permissions`.
     "revealPasswordToOperators": false,
     "sessionTimeoutSeconds": 900,
     "blockedCommands": ["stop", "restart"],
-    "vaultDirectory": "H3h12n3jk12n3j123b12k312jhkh312v3h1gefrjkdnoip4235jk235k2nme"
+    "vaultDirectory": "H3h12n3jk12n3j123b12k312jhkh312v3h1gefrjkdnoip4235jk235k2nme",
+    "allowPasswordAuth": true,
+    "allowPairing": true,
+    "requirePairedClient": false,
+    "pairingKeyTtlSeconds": 900,
+    "pairingKeyLength": 24,
+    "clientSecretLength": 40,
+    "allowedClientBuilds": [],
+    "authFailureLimit": 5,
+    "authLockoutSeconds": 300,
+    "clientRegistryFile": "config/adminmod-clients.json",
+    "authHistoryLimit": 200
   },
   "permissions": {
     "viewLevel": 0,
@@ -328,11 +391,16 @@ permission levels in `permissions`.
 Credentials are validated and clamped on load: blank secrets disable the affected integration
 instead of failing the server, and out-of-range numbers fall back to safe defaults.
 
-Server commands: `/adminmod status`, `/adminmod bridge`, `/adminmod vault`, `/adminmod reload`.
+Server commands: `/adminmod status`, `/adminmod bridge`, `/adminmod vault`, `/adminmod pair`,
+`/adminmod clients`, `/adminmod reload`.
 
 `/adminmod reload` re-reads the file and applies it live: the config object is updated in place,
 the chat bridge is rebuilt (new provider, queue size, readers) and the announcement timer is
 reset. A value the loader had to correct is reported back to the command sender.
+
+Pairing and authentication settings are read live from the same config object, so changing
+`requirePairedClient`, `authFailureLimit` or the lockout window and running `/adminmod reload`
+takes effect without a restart.
 
 ### Anti-spam guard
 
@@ -514,6 +582,7 @@ Open the dashboard in-game with the configured key (default **`]`**).
 | **OP Management** | Grant, revoke, check and list operators, applied immediately. |
 | **Moderation** | History, warnings, notes and punishment management. |
 | **Chat Bridge** | Connection status, active integrations, inbound reader state and recent delivery errors. |
+| **Access** | Pairing keys, paired-client list, live sessions, authentication history, credential rotation. |
 | **Settings** | Authentication state, connection details, redacted server settings and safe toggles. |
 
 ### Protocol
@@ -527,16 +596,33 @@ Custom Fabric packets carry one frame type in each direction:
 
 Every request carries a request id and is validated server-side before it runs.
 
+### Authentication modes
+
+The handshake names one of three modes; the server advertises which it accepts and the mode is
+bound into the session-key derivation, so a transcript from one mode can never be replayed in
+another.
+
+| Mode | Credential | Use |
+| --- | --- | --- |
+| `PASSWORD` | the shared operator password from the vault | bootstrap; disabled when `requirePairedClient` is set |
+| `PAIRING_KEY` | a single-use, time-limited key from `/adminmod pair` | enrol a new machine |
+| `CLIENT_SECRET` | the secret issued at pairing, stored on the client | normal reconnection |
+
 ### Security controls
 
 - The authenticated Minecraft player UUID is the identity; there is no separate login.
-- The password from the vault must be presented during the handshake.
+- A credential (password, pairing key or client secret) must be presented during the handshake;
+  the first frame that decrypts under the derived key is the proof.
 - Only `remoteAdmin.ownerUuid` (or the first operator to claim ownership) may use the console and
-  OP management.
-- **Replay protection:** each session carries a server nonce, and each request must use a
-  monotonically increasing sequence number. A repeated or stale frame is rejected.
+  OP management; administrators and moderators are bounded by their role.
+- **Replay protection:** each frame carries a fresh 64-bit nonce and a timestamp. A repeated nonce
+  or one outside the clock-skew window is rejected.
 - **Rate limiting:** `requestsPerMinute` applies to all requests, with a stricter
-  `consoleRequestsPerMinute` for command execution.
+  `consoleRequestsPerMinute` for command execution, plus a client-side ceiling.
+- **Lockout:** `authFailureLimit` failed authentications from one address lock it out for
+  `authLockoutSeconds`.
+- **Build gate:** when `allowedClientBuilds` is non-empty, a client whose build id is not listed is
+  refused at the handshake. This is a compatibility gate, never an authorization decision.
 - Every request is re-checked against the permission model server-side; the client's claims are
   never trusted.
 
@@ -546,16 +632,22 @@ There are no hidden backdoors and no administrative path that bypasses these che
 
 ## 14. Security model
 
-- **Credentials stay server-side.** Webhook URLs, bot tokens, Matrix access tokens and the vault
-  password are never sent to a client, and never written to the log. The dashboard reports only
-  whether a value is configured.
-- **Restricted file permissions.** The credential folder is owner-only; so are the files inside.
+- **Credentials stay server-side.** Webhook URLs, bot tokens, Matrix access tokens, the vault
+  password and paired-client secrets are never sent to a client, and never written to the log. The
+  dashboard reports only whether a value is configured.
+- **Only verifiers are stored.** The password, each pairing key and each client secret is reduced
+  to a PBKDF2 verifier before it is written; `credential.dat`, `password.txt` and
+  `adminmod-clients.json` hold nothing that can be replayed.
+- **Single-use pairing keys.** A pairing key is consumed the first time it is redeemed and expires
+  after `pairingKeyTtlSeconds`; it can never enrol a second client.
+- **Restricted file permissions.** The credential folder is owner-only, as are the files inside and
+  the client's own `adminmod-client.json`.
 - **No secrets in chat.** Only public chat is forwarded, and inbound lines are stripped of
   control characters and section signs so a platform user cannot inject a colour code.
-- **Least privilege.** Permission levels gate every order: `viewLevel` for read-only,
-  `moderateLevel` for moderation, `adminLevel` for console and OP management.
-- **No client-side authority.** The client JAR holds no execution logic; it sends orders and
-  displays responses.
+- **Least privilege.** Roles gate every order: viewer for read-only, moderator for moderation,
+  administrator for pairing management, owner for console and OP management.
+- **No client-side authority.** The client JAR holds no execution logic and no server secret; it
+  sends orders and displays responses.
 
 ---
 

@@ -29,6 +29,10 @@ public final class AdminClientMod implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        // The paired-client credential lives next to the other client config, so a machine pairs once.
+        AdminClientNetworking.get().bindStore(
+                net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("adminmod"));
+
         openDashboard = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.adminmodclient.dashboard", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_BRACKET,
                 "category.adminmodclient"));

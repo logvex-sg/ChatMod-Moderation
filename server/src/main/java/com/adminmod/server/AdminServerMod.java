@@ -10,6 +10,7 @@ import com.adminmod.common.config.AdminConfig;
 import com.adminmod.common.config.ConfigLoader;
 import com.adminmod.common.net.AdminProtocol;
 import com.adminmod.server.auth.CredentialService;
+import com.adminmod.server.auth.PairingService;
 import com.adminmod.server.auth.PermissionService;
 import com.adminmod.server.chat.ChatBridgeService;
 import com.adminmod.server.command.AdminCommand;
@@ -46,6 +47,7 @@ public final class AdminServerMod implements ModInitializer {
     private static AdminConfig config;
     private static Path configPath;
     private static CredentialService credentials;
+    private static PairingService pairing;
     private static ModerationService moderation;
     private static ChatBridgeService chatBridge;
     private static SessionManager sessions;
@@ -171,7 +173,21 @@ public final class AdminServerMod implements ModInitializer {
         PermissionService permissions = new PermissionService(config);
         requestHandler = new RemoteRequestHandler(server, config, configPath, permissions, moderation, chatBridge,
                 credentials);
-        sessions = new SessionManager(credentials, config, permissions, requestHandler, VERSION);
+
+        PairingService localPairing = null;
+        if (credentials != null) {
+            try {
+                Path registryPath = runDirectory.resolve(config.remoteAdmin.clientRegistryFile).normalize();
+                localPairing = new PairingService(config, registryPath);
+                requestHandler.setPairing(localPairing);
+            } catch (IOException e) {
+                LOGGER.error("Could not open the paired-client registry; pairing is disabled", e);
+            }
+        }
+        pairing = localPairing;
+
+        sessions = new SessionManager(credentials, config, permissions, requestHandler, localPairing, VERSION);
+        requestHandler.setSessions(sessions);
         ticker = new ServerTicker(config, sessions);
 
         // Inbound readers are started only now: the sink broadcasts through the server, which
@@ -201,6 +217,7 @@ public final class AdminServerMod implements ModInitializer {
         chatBridge = null;
         moderation = null;
         credentials = null;
+        pairing = null;
         requestHandler = null;
         ticker = null;
     }
@@ -277,6 +294,11 @@ public final class AdminServerMod implements ModInitializer {
 
     public static SessionManager sessions() {
         return sessions;
+    }
+
+    /** The pairing registry, or {@code null} when pairing could not be opened. */
+    public static PairingService pairing() {
+        return pairing;
     }
 
     public static RemoteRequestHandler requestHandler() {

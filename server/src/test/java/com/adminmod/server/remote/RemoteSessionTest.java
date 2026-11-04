@@ -6,8 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import java.util.UUID;
 
+import com.adminmod.common.net.AuthMode;
 import com.adminmod.common.net.Message;
 import com.adminmod.common.net.OrderMessage;
 import com.adminmod.common.net.OrderType;
@@ -35,9 +37,9 @@ class RemoteSessionTest {
         PasswordVault vault = PasswordVault.create().vault();
         byte[] clientNonce = PasswordVault.randomNonce(16);
         byte[] serverNonce = PasswordVault.randomNonce(16);
-        byte[] key = Kdf.deriveSessionKey(vault.verifierCopy(), clientNonce, serverNonce);
-        RemoteSession session = new RemoteSession(PLAYER, "Alex", clientNonce, serverNonce, vault,
-                generalLimit, consoleLimit);
+        byte[] key = Kdf.deriveSessionKey(vault.verifierCopy(), AuthMode.PASSWORD.id(), clientNonce, serverNonce);
+        RemoteSession session = RemoteSession.single(PLAYER, "Alex", AuthMode.PASSWORD, "",
+                vault.verifierCopy(), clientNonce, serverNonce, generalLimit, consoleLimit);
         return new Pair(session, new SessionCipher(key));
     }
 
@@ -138,5 +140,75 @@ class RemoteSessionTest {
         assertTrue(pair.session().isAuthenticated());
         assertTrue(pair.session().isOwner());
         assertEquals(4, pair.session().permissionLevel());
+    }
+
+    @Test
+    void aPairingSessionMatchesTheCorrectCandidateKey() throws Exception {
+        // Two pending keys, in a known order; the client holds the second one.
+        byte[] firstKey = Kdf.derivePairingKey("AAAA");
+        byte[] secondKey = Kdf.derivePairingKey("BBBB");
+        byte[] clientNonce = PasswordVault.randomNonce(16);
+        byte[] serverNonce = PasswordVault.randomNonce(16);
+        RemoteSession session = RemoteSession.pairing(PLAYER, "Alex", List.of(firstKey, secondKey),
+                clientNonce, serverNonce, 60, 10);
+
+        byte[] clientKey = Kdf.deriveSessionKey(secondKey.clone(), AuthMode.PAIRING_KEY.id(), clientNonce, serverNonce);
+        SessionCipher client = new SessionCipher(clientKey);
+        long nonce = 3L;
+        long timestamp = System.currentTimeMillis();
+        byte[] ciphertext = client.encrypt(Message.encode(new OrderMessage(1, OrderType.STATUS, "arg")), nonce, timestamp);
+
+        session.open(ciphertext, nonce, timestamp);
+        assertTrue(session.isKeyProven());
+        assertEquals(1, session.matchedIndex());
+        assertArrayEquals(secondKey, session.matchedVerifier());
+    }
+
+    @Test
+    void aPairingSessionRejectsAKeyItDoesNotHold() {
+        byte[] pending = Kdf.derivePairingKey("AAAA");
+        byte[] clientNonce = PasswordVault.randomNonce(16);
+        byte[] serverNonce = PasswordVault.randomNonce(16);
+        RemoteSession session = RemoteSession.pairing(PLAYER, "Alex", List.of(pending), clientNonce, serverNonce,
+                60, 10);
+
+        // A client that made up its own key cannot produce a frame this session accepts.
+        byte[] wrongKey = Kdf.deriveSessionKey(Kdf.derivePairingKey("ZZZZ"), AuthMode.PAIRING_KEY.id(),
+                clientNonce, serverNonce);
+        SessionCipher client = new SessionCipher(wrongKey);
+        long nonce = 4L;
+        long timestamp = System.currentTimeMillis();
+        byte[] ciphertext = client.encrypt(Message.encode(new OrderMessage(1, OrderType.STATUS, "arg")), nonce, timestamp);
+
+        assertThrows(SessionException.class, () -> session.open(ciphertext, nonce, timestamp));
+        assertFalse(session.isKeyProven());
+    }
+
+    @Test
+    void aPairingSessionWithNoPendingKeysCannotMatch() {
+        byte[] clientNonce = PasswordVault.randomNonce(16);
+        byte[] serverNonce = PasswordVault.randomNonce(16);
+        RemoteSession session = RemoteSession.pairing(PLAYER, "Alex", List.of(), clientNonce, serverNonce, 60, 10);
+
+        byte[] wrongKey = Kdf.deriveSessionKey(Kdf.derivePairingKey("ZZZZ"), AuthMode.PAIRING_KEY.id(),
+                clientNonce, serverNonce);
+        SessionCipher client = new SessionCipher(wrongKey);
+        long nonce = 5L;
+        long timestamp = System.currentTimeMillis();
+        byte[] ciphertext = client.encrypt(Message.encode(new OrderMessage(1, OrderType.STATUS, "arg")), nonce, timestamp);
+
+        assertThrows(SessionException.class, () -> session.open(ciphertext, nonce, timestamp));
+    }
+
+    @Test
+    void aModeIsBoundIntoTheSessionKey() {
+        // The same credential and nonces must not produce the same key in two different modes,
+        // otherwise a pairing transcript could be replayed against the password path.
+        byte[] key = Kdf.deriveClientKey("same-credential");
+        byte[] clientNonce = PasswordVault.randomNonce(16);
+        byte[] serverNonce = PasswordVault.randomNonce(16);
+        byte[] passwordMode = Kdf.deriveSessionKey(key.clone(), AuthMode.PASSWORD.id(), clientNonce, serverNonce);
+        byte[] pairingMode = Kdf.deriveSessionKey(key.clone(), AuthMode.PAIRING_KEY.id(), clientNonce, serverNonce);
+        assertFalse(java.util.Arrays.equals(passwordMode, pairingMode));
     }
 }
