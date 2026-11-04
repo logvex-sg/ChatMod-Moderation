@@ -15,6 +15,7 @@ import com.adminmod.integrations.ChatEvent;
 import com.adminmod.integrations.ChatFilter;
 import com.adminmod.integrations.ChatProvider;
 import com.adminmod.integrations.ChatProviderFactory;
+import com.adminmod.integrations.Priority;
 import com.adminmod.integrations.discord.DiscordGatewayReceiver;
 import com.adminmod.integrations.http.HttpTransport;
 import com.adminmod.integrations.http.JdkHttpTransport;
@@ -103,7 +104,7 @@ public final class ChatBridgeService {
 
         List<ChatProvider> providers = ChatProviderFactory.all(config, transport);
         Duration timeout = Duration.ofMillis(config.chatBridge.requestTimeoutMillis);
-        this.dispatcher = new ChatDispatcher(providers, config.chatBridge.queueCapacity,
+        this.dispatcher = new ChatDispatcher(config.chatBridge, providers, config.chatBridge.queueCapacity,
                 config.chatBridge.maxAttempts, timeout, RetryPolicy.defaults());
 
         InboundChatBridge bridge = new InboundChatBridge(config.chatBridge.inbound, sink);
@@ -245,6 +246,16 @@ public final class ChatBridgeService {
 
     /** Sends a synthetic message, used for join/leave and announcement notifications. */
     public void onSystemMessage(String text) {
+        onSystemMessage(text, false);
+    }
+
+    /**
+     * Sends a synthetic message.
+     *
+     * @param critical when {@code true} the message jumps the queue, which is what an alert or a
+     *                 moderation action needs
+     */
+    public void onSystemMessage(String text, boolean critical) {
         if (text == null || text.isBlank() || !config.chatBridge.enabled) {
             return;
         }
@@ -257,11 +268,13 @@ public final class ChatBridgeService {
         if (isInboundEcho(text)) {
             return;
         }
-        if (!config.chatBridge.forwardJoinLeave) {
+        if (!config.chatBridge.forwardJoinLeave && !critical) {
             return;
         }
         String body = TextSanitizer.truncate(text, config.chatBridge.maxMessageLength);
-        dispatcher.enqueue(new ChatEvent(serverName, "", body, System.currentTimeMillis(), serverName));
+        ChatEvent event = new ChatEvent(serverName, "", body, System.currentTimeMillis(), serverName,
+                Channel.SYSTEM, critical ? Priority.CRITICAL : Priority.NORMAL);
+        dispatcher.enqueue(event);
     }
 
     /** Records a command run through the remote console so its echo is not forwarded. */
@@ -333,6 +346,8 @@ public final class ChatBridgeService {
         root.addProperty("failed", current.failedCount());
         root.addProperty("dropped", current.droppedCount());
         root.addProperty("retries", current.retryCount());
+        root.addProperty("duplicates", current.duplicateCount());
+        root.addProperty("batching", config.chatBridge.batching.enabled);
         root.addProperty("lastDeliveryStatus", current.lastDeliveryStatus());
         root.addProperty("antiSpamEnabled", config.chatBridge.antiSpam.enabled);
 

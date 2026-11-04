@@ -10,7 +10,6 @@ import java.util.Optional;
 import java.util.UUID;
 
 import com.adminmod.common.config.AdminConfig;
-import com.adminmod.common.config.ConfigLoader;
 import com.adminmod.common.config.ConfigRedactor;
 import com.adminmod.common.localchat.LocalChatFile;
 import com.adminmod.common.model.DurationParser;
@@ -22,6 +21,7 @@ import com.adminmod.common.net.AdminProtocol;
 import com.adminmod.common.net.OrderMessage;
 import com.adminmod.common.net.OrderResultMessage;
 import com.adminmod.common.security.ClientRegistry;
+import com.adminmod.server.AdminServerMod;
 import com.adminmod.server.auth.AuthHistory;
 import com.adminmod.server.auth.CredentialService;
 import com.adminmod.server.auth.PairingService;
@@ -69,6 +69,8 @@ public final class RemoteRequestHandler {
     private SessionManager sessions;
     private LocalChatService localChat;
     private Path localChatPath;
+    private com.adminmod.server.diagnostics.DiagnosticsService diagnostics;
+    private com.adminmod.common.protection.ProtectionManager protection;
 
     public RemoteRequestHandler(MinecraftServer server, AdminConfig config, Path configPath,
             PermissionService permissions, ModerationService moderation, ChatBridgeService chatBridge,
@@ -98,6 +100,16 @@ public final class RemoteRequestHandler {
         this.localChatPath = localChatPath;
     }
 
+    /** Injected after construction so the diagnostics tab can read the live health view. */
+    public void setDiagnostics(com.adminmod.server.diagnostics.DiagnosticsService diagnostics) {
+        this.diagnostics = diagnostics;
+    }
+
+    /** Injected after construction so the protection tab can read the anti-crash state. */
+    public void setProtection(com.adminmod.common.protection.ProtectionManager protection) {
+        this.protection = protection;
+    }
+
     /** Live permission level of a connected player: 4 for operators, otherwise 0. */
     public int permissionLevelOf(ServerPlayerEntity player) {
         return server.getPlayerManager().isOperator(player.getGameProfile()) ? server.getOpPermissionLevel() : 0;
@@ -106,7 +118,7 @@ public final class RemoteRequestHandler {
     /** Writes the live configuration back to disk. Used when ownership is claimed. */
     public void persistConfig() {
         try {
-            ConfigLoader.save(configPath, config);
+            com.adminmod.common.config.ModularConfigLoader.save(configDirectory(), config);
         } catch (IOException e) {
             LOGGER.warn("Could not persist the configuration", e);
         }
@@ -147,6 +159,12 @@ public final class RemoteRequestHandler {
                 case OP_GRANT_OWNER -> grantOwnerOp(order, staffUuid, staffName);
                 case LOCAL_CHAT_STATUS -> localChatStatus(order);
                 case UPDATE_LOCAL_CHAT -> updateLocalChat(order);
+                case DIAGNOSTICS_STATUS -> diagnosticsStatus(order);
+                case DIAGNOSTICS_HISTORY -> diagnosticsHistory(order);
+                case EXPORT_REPORT -> exportReport(order, staffName);
+                case SET_PROFILE -> setProfile(order, staffName);
+                case PROTECTION_STATUS -> protectionStatus(order);
+                case CLEAR_VIOLATIONS -> clearViolations(order, staffName);
             };
         } catch (IllegalArgumentException e) {
             return new OrderResultMessage(order.requestId(), false, e.getMessage());
@@ -567,7 +585,7 @@ public final class RemoteRequestHandler {
             if (localChatPath != null) {
                 LocalChatFile.save(localChatPath, config.localChat);
             }
-            ConfigLoader.save(configPath, config);
+            com.adminmod.common.config.ModularConfigLoader.save(configDirectory(), config);
         } catch (IOException e) {
             return failure(order, "the proximity settings could not be written");
         }
@@ -642,6 +660,86 @@ public final class RemoteRequestHandler {
         return success(order, "ok", Json.write(ConfigRedactor.view(config)));
     }
 
+    // ------------------------------------------------------------------ diagnostics
+
+    private OrderResultMessage diagnosticsStatus(OrderMessage order) {
+        if (diagnostics == null) {
+            return failure(order, "diagnostics are not available");
+        }
+        return success(order, "ok", diagnostics.statusJson());
+    }
+
+    private OrderResultMessage diagnosticsHistory(OrderMessage order) {
+        if (diagnostics == null) {
+            return failure(order, "diagnostics are not available");
+        }
+        return success(order, "ok", diagnostics.historyJson());
+    }
+
+    private OrderResultMessage exportReport(OrderMessage order, String staffName) {
+        if (diagnostics == null) {
+            return failure(order, "diagnostics are not available");
+        }
+        try {
+            java.nio.file.Path file = diagnostics.exportReport();
+            if (AdminServerMod.events() != null) {
+                AdminServerMod.events().staff(staffName, file.getFileName().toString(),
+                        "exported a diagnostic report");
+            }
+            JsonObject root = new JsonObject();
+            root.addProperty("path", file.toAbsolutePath().toString());
+            root.addProperty("name", file.getFileName().toString());
+            return success(order, "report written", Json.write(root));
+        } catch (IOException e) {
+            return failure(order, "the report could not be written");
+        }
+    }
+
+    // ------------------------------------------------------------------ profiles and protection
+
+    private OrderResultMessage setProfile(OrderMessage order, String staffName) {
+        String requested = order.argument(0);
+        if (!com.adminmod.common.config.PerformanceProfile.apply(config, requested)) {
+            return failure(order, "unknown profile: " + requested);
+        }
+        if (protection != null) {
+            protection.reload();
+        }
+        try {
+            com.adminmod.common.config.ModularConfigLoader.save(configDirectory(), config);
+        } catch (IOException e) {
+            return failure(order, "the configuration could not be written");
+        }
+        if (AdminServerMod.events() != null) {
+            AdminServerMod.events().staff(staffName, config.profile, "applied the optimisation profile");
+        }
+        return success(order, "profile set to " + config.profile, Json.write(ConfigRedactor.view(config)));
+    }
+
+    private OrderResultMessage protectionStatus(OrderMessage order) {
+        if (protection == null) {
+            return failure(order, "protection is not available");
+        }
+        return success(order, "ok", protection.statusJson());
+    }
+
+    private OrderResultMessage clearViolations(OrderMessage order, String staffName) {
+        if (protection == null) {
+            return failure(order, "protection is not available");
+        }
+        protection.violations().reset();
+        if (AdminServerMod.events() != null) {
+            AdminServerMod.events().staff(staffName, "violations", "cleared the protection counters");
+        }
+        return success(order, "counters cleared", protection.statusJson());
+    }
+
+    /** The {@code config/admin} directory, resolved from the config file's parent. */
+    private java.nio.file.Path configDirectory() {
+        java.nio.file.Path parent = configPath.getParent();
+        return parent == null ? java.nio.file.Path.of("config", "admin") : parent.resolve("admin");
+    }
+
     private OrderResultMessage updateSetting(OrderMessage order, UUID staffUuid, String staffName) {
         String key = order.argument(0).toLowerCase(Locale.ROOT);
         String value = order.argument(1);
@@ -650,7 +748,7 @@ public final class RemoteRequestHandler {
             return failure(order, "unknown or invalid setting: " + key);
         }
         try {
-            ConfigLoader.save(configPath, config);
+            com.adminmod.common.config.ModularConfigLoader.save(configDirectory(), config);
         } catch (IOException e) {
             return failure(order, "the configuration could not be written");
         }

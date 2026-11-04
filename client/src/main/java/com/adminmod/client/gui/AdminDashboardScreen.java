@@ -7,10 +7,12 @@ import com.adminmod.client.gui.tab.AccessTab;
 import com.adminmod.client.gui.tab.ChatBridgeTab;
 import com.adminmod.client.gui.tab.ConsoleTab;
 import com.adminmod.client.gui.tab.DashboardTab;
+import com.adminmod.client.gui.tab.DiagnosticsTab;
 import com.adminmod.client.gui.tab.LocalChatTab;
 import com.adminmod.client.gui.tab.ModerationTab;
 import com.adminmod.client.gui.tab.OpTab;
 import com.adminmod.client.gui.tab.PlayersTab;
+import com.adminmod.client.gui.tab.ProtectionTab;
 import com.adminmod.client.gui.tab.SettingsTab;
 import com.adminmod.client.net.AdminClientNetworking;
 
@@ -56,6 +58,8 @@ public final class AdminDashboardScreen extends Screen {
             tabs.add(new ModerationTab(this));
             tabs.add(new ChatBridgeTab(this));
             tabs.add(new LocalChatTab(this));
+            tabs.add(new DiagnosticsTab(this));
+            tabs.add(new ProtectionTab(this));
             tabs.add(new AccessTab(this));
             tabs.add(new SettingsTab(this));
             active = tabs.get(0);

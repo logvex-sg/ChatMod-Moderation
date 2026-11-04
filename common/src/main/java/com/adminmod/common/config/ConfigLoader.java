@@ -31,7 +31,7 @@ import com.google.gson.JsonParser;
 public final class ConfigLoader {
 
     /** Schema version this build writes. Older files are upgraded to it on load. */
-    public static final int CURRENT_VERSION = 2;
+    public static final int CURRENT_VERSION = 3;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
@@ -165,6 +165,9 @@ public final class ConfigLoader {
         if (config.chatBridge.inbound.matrix.extraRoomIds == null) {
             config.chatBridge.inbound.matrix.extraRoomIds = List.of();
         }
+        if (config.chatBridge.batching == null) {
+            config.chatBridge.batching = new AdminConfig.Batching();
+        }
         if (config.localChat == null) {
             config.localChat = new AdminConfig.LocalChat();
         }
@@ -216,11 +219,42 @@ public final class ConfigLoader {
         if (config.logging == null) {
             config.logging = new AdminConfig.Logging();
         }
+        if (config.general == null) {
+            config.general = new AdminConfig.General();
+        }
+        if (config.anticheat == null) {
+            config.anticheat = new AdminConfig.Anticheat();
+        }
+        if (config.antidupe == null) {
+            config.antidupe = new AdminConfig.Antidupe();
+        }
+        if (config.protection == null) {
+            config.protection = new AdminConfig.Protection();
+        }
+        if (config.performance == null) {
+            config.performance = new AdminConfig.Performance();
+        }
+        if (config.alerts == null) {
+            config.alerts = new AdminConfig.Alerts();
+        }
+        if (config.profile == null || config.profile.isBlank()) {
+            config.profile = "balanced";
+        }
         config.configVersion = CURRENT_VERSION;
     }
 
     /** Clamps every value into a range the rest of the code can rely on. */
     private static void validate(AdminConfig config, ValidationReport report) {
+        validateForReport(config, report);
+    }
+
+    /**
+     * Clamps every value into a range the rest of the code can rely on, recording each correction.
+     *
+     * <p>Public so the modular loader can validate a configuration it assembled from several files
+     * with the same rules the single-file loader uses.
+     */
+    public static void validateForReport(AdminConfig config, ValidationReport report) {
         clampInt(report, "chatBridge.queueCapacity", config.chatBridge.queueCapacity, 16, 65_536, v -> config.chatBridge.queueCapacity = v);
         clampInt(report, "chatBridge.maxAttempts", config.chatBridge.maxAttempts, 1, 20, v -> config.chatBridge.maxAttempts = v);
         clampInt(report, "chatBridge.requestTimeoutMillis", config.chatBridge.requestTimeoutMillis, 1_000, 120_000, v -> config.chatBridge.requestTimeoutMillis = v);
@@ -228,6 +262,10 @@ public final class ConfigLoader {
         clampLong(report, "chatBridge.antiSpam.duplicateWindowSeconds", config.chatBridge.antiSpam.duplicateWindowSeconds, 0L, 3_600L, v -> config.chatBridge.antiSpam.duplicateWindowSeconds = v);
         clampInt(report, "chatBridge.antiSpam.maxDuplicates", config.chatBridge.antiSpam.maxDuplicates, 0, 100, v -> config.chatBridge.antiSpam.maxDuplicates = v);
         clampLong(report, "chatBridge.antiSpam.minIntervalMillis", config.chatBridge.antiSpam.minIntervalMillis, 0L, 60_000L, v -> config.chatBridge.antiSpam.minIntervalMillis = v);
+        clampInt(report, "chatBridge.batching.batchSize", config.chatBridge.batching.batchSize, 1, 100, v -> config.chatBridge.batching.batchSize = v);
+        clampLong(report, "chatBridge.batching.batchWindowMillis", config.chatBridge.batching.batchWindowMillis, 0L, 10_000L, v -> config.chatBridge.batching.batchWindowMillis = v);
+        clampLong(report, "chatBridge.batching.dedupeWindowMillis", config.chatBridge.batching.dedupeWindowMillis, 0L, 60_000L, v -> config.chatBridge.batching.dedupeWindowMillis = v);
+        clampInt(report, "chatBridge.batching.dedupeMemory", config.chatBridge.batching.dedupeMemory, 0, 65_536, v -> config.chatBridge.batching.dedupeMemory = v);
 
         if (config.chatBridge.inbound.format == null || config.chatBridge.inbound.format.isBlank()) {
             config.chatBridge.inbound.format = "[%platform%] %user%: %message%";
@@ -295,6 +333,48 @@ public final class ConfigLoader {
 
         clampLong(report, "announcements.intervalSeconds", config.announcements.intervalSeconds, 10L, 86_400L, v -> config.announcements.intervalSeconds = v);
 
+        clampInt(report, "general.historyMinutes", config.general.historyMinutes, 5, 10_080, v -> config.general.historyMinutes = v);
+
+        clampInt(report, "protection.maxChatLength", config.protection.maxChatLength, 32, 32_000, v -> config.protection.maxChatLength = v);
+        clampInt(report, "protection.maxPayloadBytes", config.protection.maxPayloadBytes, 256, 1_048_576, v -> config.protection.maxPayloadBytes = v);
+        clampInt(report, "protection.maxBookPages", config.protection.maxBookPages, 1, 1_024, v -> config.protection.maxBookPages = v);
+        clampInt(report, "protection.maxBookPageLength", config.protection.maxBookPageLength, 16, 32_000, v -> config.protection.maxBookPageLength = v);
+        clampInt(report, "protection.maxBookTitleLength", config.protection.maxBookTitleLength, 1, 1_024, v -> config.protection.maxBookTitleLength = v);
+        clampInt(report, "protection.maxSignLineLength", config.protection.maxSignLineLength, 16, 32_000, v -> config.protection.maxSignLineLength = v);
+        clampInt(report, "protection.maxModifiedStacks", config.protection.maxModifiedStacks, 1, 4_096, v -> config.protection.maxModifiedStacks = v);
+        clampInt(report, "protection.joinGraceTicks", config.protection.joinGraceTicks, 0, 1_200, v -> config.protection.joinGraceTicks = v);
+        clampInt(report, "protection.chatPerMinute", config.protection.chatPerMinute, 1, 100_000, v -> config.protection.chatPerMinute = v);
+        clampInt(report, "protection.commandsPerMinute", config.protection.commandsPerMinute, 1, 100_000, v -> config.protection.commandsPerMinute = v);
+        clampInt(report, "protection.packetsPerSecond", config.protection.packetsPerSecond, 1, 1_000_000, v -> config.protection.packetsPerSecond = v);
+        clampInt(report, "protection.packetsPerTenSeconds", config.protection.packetsPerTenSeconds, 1, 10_000_000, v -> config.protection.packetsPerTenSeconds = v);
+        clampInt(report, "protection.inventoryClicksPerMinute", config.protection.inventoryClicksPerMinute, 1, 100_000, v -> config.protection.inventoryClicksPerMinute = v);
+        clampInt(report, "protection.entityInteractionsPerMinute", config.protection.entityInteractionsPerMinute, 1, 100_000, v -> config.protection.entityInteractionsPerMinute = v);
+        clampInt(report, "protection.violationsBeforeKick", config.protection.violationsBeforeKick, 0, 1_000, v -> config.protection.violationsBeforeKick = v);
+
+        clampInt(report, "anticheat.connectionRatePerMinute", config.anticheat.connectionRatePerMinute, 1, 100_000, v -> config.anticheat.connectionRatePerMinute = v);
+        clampInt(report, "anticheat.maxConnectionsPerAddress", config.anticheat.maxConnectionsPerAddress, 1, 1_000, v -> config.anticheat.maxConnectionsPerAddress = v);
+        clampInt(report, "anticheat.maxTrackedAddresses", config.anticheat.maxTrackedAddresses, 64, 1_000_000, v -> config.anticheat.maxTrackedAddresses = v);
+
+        clampInt(report, "antidupe.repeatClickThreshold", config.antidupe.repeatClickThreshold, 2, 1_000, v -> config.antidupe.repeatClickThreshold = v);
+        clampLong(report, "antidupe.repeatClickWindowMillis", config.antidupe.repeatClickWindowMillis, 50L, 60_000L, v -> config.antidupe.repeatClickWindowMillis = v);
+
+        clampLong(report, "performance.playerCacheMillis", config.performance.playerCacheMillis, 100L, 600_000L, v -> config.performance.playerCacheMillis = v);
+        clampInt(report, "performance.playerCacheLimit", config.performance.playerCacheLimit, 16, 100_000, v -> config.performance.playerCacheLimit = v);
+        clampInt(report, "performance.chatHistoryPerPlayer", config.performance.chatHistoryPerPlayer, 1, 10_000, v -> config.performance.chatHistoryPerPlayer = v);
+        clampInt(report, "performance.chatHistoryPlayers", config.performance.chatHistoryPlayers, 1, 100_000, v -> config.performance.chatHistoryPlayers = v);
+        clampInt(report, "performance.transactionHistory", config.performance.transactionHistory, 16, 100_000, v -> config.performance.transactionHistory = v);
+        clampInt(report, "performance.eventHistory", config.performance.eventHistory, 16, 100_000, v -> config.performance.eventHistory = v);
+        clampInt(report, "performance.metricHistory", config.performance.metricHistory, 10, 100_000, v -> config.performance.metricHistory = v);
+        clampInt(report, "performance.sampleIntervalTicks", config.performance.sampleIntervalTicks, 1, 1_200, v -> config.performance.sampleIntervalTicks = v);
+        clampInt(report, "performance.entityCountIntervalTicks", config.performance.entityCountIntervalTicks, 20, 72_000, v -> config.performance.entityCountIntervalTicks = v);
+        clampInt(report, "performance.cleanupIntervalTicks", config.performance.cleanupIntervalTicks, 20, 72_000, v -> config.performance.cleanupIntervalTicks = v);
+
+        clampDouble(report, "alerts.msptWarn", config.alerts.msptWarn, 1.0, 10_000.0, v -> config.alerts.msptWarn = v);
+        clampDouble(report, "alerts.tpsWarn", config.alerts.tpsWarn, 0.0, 20.0, v -> config.alerts.tpsWarn = v);
+        clampDouble(report, "alerts.memoryWarnFraction", config.alerts.memoryWarnFraction, 0.1, 1.0, v -> config.alerts.memoryWarnFraction = v);
+        clampInt(report, "alerts.queueWarnDepth", config.alerts.queueWarnDepth, 1, 1_000_000, v -> config.alerts.queueWarnDepth = v);
+        clampLong(report, "alerts.alertCooldownSeconds", config.alerts.alertCooldownSeconds, 1L, 86_400L, v -> config.alerts.alertCooldownSeconds = v);
+
         if (config.logging.level == null || normaliseLevel(config.logging.level) == null) {
             report.add("logging.level was not one of off/error/warn/info/debug; using info");
             config.logging.level = "info";
@@ -351,6 +431,15 @@ public final class ConfigLoader {
             java.util.function.LongConsumer setter) {
         if (value < min || value > max) {
             long replacement = Math.max(min, Math.min(max, value));
+            setter.accept(replacement);
+            report.add(key + " = " + value + " is outside " + min + ".." + max + "; using " + replacement);
+        }
+    }
+
+    private static void clampDouble(ValidationReport report, String key, double value, double min, double max,
+            java.util.function.DoubleConsumer setter) {
+        if (Double.isNaN(value) || value < min || value > max) {
+            double replacement = Double.isNaN(value) ? min : Math.max(min, Math.min(max, value));
             setter.accept(replacement);
             report.add(key + " = " + value + " is outside " + min + ".." + max + "; using " + replacement);
         }

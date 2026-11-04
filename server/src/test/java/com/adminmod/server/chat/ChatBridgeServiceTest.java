@@ -145,10 +145,12 @@ class ChatBridgeServiceTest {
         bridge.onPublicChat("Alex", "uuid-a", "hello");
         bridge.onPublicChat("Steve", "uuid-b", "hello");
         long deadline = System.currentTimeMillis() + 3_000L;
-        while (transport.uris.size() < 2 && System.currentTimeMillis() < deadline) {
+        while (bridge.dispatcher().deliveredCount() < 2 && System.currentTimeMillis() < deadline) {
             Thread.onSpinWait();
         }
-        assertEquals(2, transport.uris.size(), "a different player's identical line is not spam");
+        // Batching may combine the two lines into one request, so the count of delivered events is
+        // what matters, not the count of HTTP requests.
+        assertEquals(2, bridge.dispatcher().deliveredCount(), "a different player's identical line is not spam");
         bridge.close();
     }
 

@@ -31,6 +31,7 @@ public final class ServerTicker {
     private long lastAnnouncementMillis;
     private int announcementIndex;
     private long lastExpirySweepMillis;
+    private long lastCleanupMillis;
 
     public ServerTicker(AdminConfig config, SessionManager sessions) {
         this.config = config;
@@ -51,7 +52,29 @@ public final class ServerTicker {
             }
         }
 
+        tickCleanup(server, now);
         tickAnnouncements(server, now);
+    }
+
+    /**
+     * Drops expired data from the bounded caches and histories.
+     *
+     * <p>Everything ADMIN keeps is bounded by construction, but a record that is no longer relevant
+     * should still be released promptly rather than waiting for the bound to evict it. This runs on
+     * the configured cleanup interval, which defaults to once a minute.
+     */
+    private void tickCleanup(MinecraftServer server, long now) {
+        long interval = Math.max(20, config.performance.cleanupIntervalTicks) * 50L;
+        if (now - lastCleanupMillis < interval) {
+            return;
+        }
+        lastCleanupMillis = now;
+        if (AdminServerMod.playerCache() != null) {
+            AdminServerMod.playerCache().sweep(now);
+        }
+        if (AdminServerMod.events() != null) {
+            AdminServerMod.events().sweep(config.general.historyMinutes * 60_000L);
+        }
     }
 
     private void tickAnnouncements(MinecraftServer server, long now) {

@@ -18,6 +18,15 @@ public final class AdminConfig {
     /** Schema version written into the file. Bumped whenever the layout changes. */
     public int configVersion = ConfigLoader.CURRENT_VERSION;
 
+    /**
+     * The optimisation profile that was applied. One of {@code performance}, {@code balanced} or
+     * {@code maximum}. Selecting a profile rewrites the protection and performance thresholds to
+     * that profile's values; the individual values remain editable afterwards, so a profile is a
+     * starting point rather than a lock.
+     */
+    public String profile = "balanced";
+
+    public General general = new General();
     public ChatBridge chatBridge = new ChatBridge();
     public LocalChat localChat = new LocalChat();
     public Moderation moderation = new Moderation();
@@ -25,6 +34,11 @@ public final class AdminConfig {
     public Permissions permissions = new Permissions();
     public Announcements announcements = new Announcements();
     public Maintenance maintenance = new Maintenance();
+    public Anticheat anticheat = new Anticheat();
+    public Antidupe antidupe = new Antidupe();
+    public Protection protection = new Protection();
+    public Performance performance = new Performance();
+    public Alerts alerts = new Alerts();
     public Logging logging = new Logging();
 
     public static final class ChatBridge {
@@ -62,6 +76,27 @@ public final class AdminConfig {
          * upgraded server keeps forwarding outbound chat exactly as before.
          */
         public Inbound inbound = new Inbound();
+        /**
+         * Batching and de-duplication for the outbound queue.
+         *
+         * <p>Batching combines several chat lines into one HTTP request, which is what keeps a busy
+         * server under Discord's webhook rate limit. De-duplication drops an identical message seen
+         * twice inside a short window, which catches a double-fired event.
+         */
+        public Batching batching = new Batching();
+    }
+
+    /** Outbound batching and duplicate suppression. */
+    public static final class Batching {
+        public boolean enabled = true;
+        /** Most messages combined into one request; the provider may cap this lower. */
+        public int batchSize = 8;
+        /** How long the worker may wait for a batch to fill before sending what it has. */
+        public long batchWindowMillis = 250L;
+        /** Identical (player, message) pairs inside this window are delivered once. */
+        public long dedupeWindowMillis = 1_500L;
+        /** Most recent message signatures remembered for duplicate detection. */
+        public int dedupeMemory = 512;
     }
 
     /**
@@ -399,5 +434,149 @@ public final class AdminConfig {
     public static final class Logging {
         /** One of {@code off}, {@code error}, {@code warn}, {@code info}, {@code debug}. */
         public String level = "info";
+    }
+
+    /** Server identity and the master switches for the whole mod. */
+    public static final class General {
+        /** Name shown in the bridge payload and on the diagnostics dashboard. */
+        public String serverName = "";
+        /** Master switch for the chat bridge and the remote administration endpoint together. */
+        public boolean enabled = true;
+        /** Retention for the in-memory event history, in minutes. */
+        public int historyMinutes = 240;
+    }
+
+    /**
+     * Anti-crash and abuse protection.
+     *
+     * <p>Every check here is off by default except the ones that only reject data a legitimate
+     * client never sends (oversized payloads, malformed text). The rate limits default to values a
+     * real client does not reach, because the cost of a false positive — kicking an innocent
+     * player during a lag spike — is worse than the cost of a missed trigger.
+     */
+    public static final class Protection {
+        public boolean enabled = true;
+        /** Longest chat message accepted; longer messages are dropped before processing. */
+        public int maxChatLength = 256;
+        /** Largest custom payload accepted on the mod's own channel, in bytes. */
+        public int maxPayloadBytes = 32_768;
+        /** Pages allowed in one book-and-quill update. */
+        public int maxBookPages = 100;
+        /** Characters allowed on one book page. */
+        public int maxBookPageLength = 1_024;
+        /** Characters allowed in a book title. */
+        public int maxBookTitleLength = 64;
+        /** Characters allowed on one sign line. */
+        public int maxSignLineLength = 384;
+        /** Stacks a single inventory click may claim to modify. */
+        public int maxModifiedStacks = 128;
+        /** Ticks of grace after a join before the checks apply, so login traffic is not counted. */
+        public int joinGraceTicks = 100;
+        /** Chat messages allowed per minute, per player. */
+        public int chatPerMinute = 40;
+        /** Commands allowed per minute, per player. */
+        public int commandsPerMinute = 60;
+        /** Packets allowed in one second, per player. */
+        public int packetsPerSecond = 400;
+        /** Packets allowed in ten seconds, per player; both windows must trip. */
+        public int packetsPerTenSeconds = 3_000;
+        /** Inventory clicks allowed per minute, per player. */
+        public int inventoryClicksPerMinute = 300;
+        /** Entity interactions allowed per minute, per player. */
+        public int entityInteractionsPerMinute = 600;
+        /** Consecutive violations before the player is kicked. Zero never kicks. */
+        public int violationsBeforeKick = 0;
+        /** Whether a detected violation is recorded in the bounded violation log. */
+        public boolean logViolations = true;
+    }
+
+    /**
+     * Connection-level protection. Kept separate from {@link Protection} because it is about
+     * the login path rather than per-player packet behaviour.
+     */
+    public static final class Anticheat {
+        public boolean enabled = true;
+        /** Connections accepted from one address per minute. */
+        public int connectionRatePerMinute = 30;
+        /** Concurrent connections allowed from one address. */
+        public int maxConnectionsPerAddress = 8;
+        /** Largest number of tracked addresses in the connection limiter. */
+        public int maxTrackedAddresses = 4_096;
+        /** Whether an over-rate address is temporarily restricted rather than only refused once. */
+        public boolean restrictOnFlood = true;
+    }
+
+    /**
+     * Duplication and inventory-transaction abuse protection.
+     *
+     * <p>The checks are conservative on purpose: they reject only shapes no vanilla client
+     * produces (a click against a slot that does not exist, a modified-stack map far larger than
+     * the window, a click rate a human cannot reach). Anything ambiguous is allowed and counted.
+     */
+    public static final class Antidupe {
+        public boolean enabled = true;
+        /** Reject a click whose slot index is outside the open container. */
+        public boolean validateSlots = true;
+        /** Reject a click that claims to modify more stacks than the window can hold. */
+        public boolean validateModifiedStacks = true;
+        /** Tracks a rolling per-player click rate and flags a sustained burst. */
+        public boolean monitorClickRate = true;
+        /** Tracks repeated identical clicks, a common signature of a dupe attempt. */
+        public boolean monitorRepeatClicks = true;
+        /** Identical (window, slot, button) clicks inside this window before it is flagged. */
+        public int repeatClickThreshold = 12;
+        /** Length of the repeat window, in milliseconds. */
+        public long repeatClickWindowMillis = 1_000L;
+    }
+
+    /**
+     * Performance and memory limits.
+     *
+     * <p>These bound how much memory ADMIN itself may use. Every collection ADMIN keeps is sized
+     * from here, so a server with many players can raise them deliberately rather than discovering
+     * an unbounded map under load.
+     */
+    public static final class Performance {
+        /** How long a cached player record lives before it is rebuilt, in milliseconds. */
+        public long playerCacheMillis = 1_000L;
+        /** Most player records the cache will hold. */
+        public int playerCacheLimit = 1_024;
+        /** Most chat-history entries retained per player. */
+        public int chatHistoryPerPlayer = 50;
+        /** Most players for whom chat history is retained. */
+        public int chatHistoryPlayers = 256;
+        /** Most inventory transactions retained for the transaction view. */
+        public int transactionHistory = 512;
+        /** Most server events retained for the event history. */
+        public int eventHistory = 512;
+        /** Most samples retained for each performance series. */
+        public int metricHistory = 300;
+        /** How often a performance sample is taken, in ticks. */
+        public int sampleIntervalTicks = 20;
+        /** Whether to sample the JVM's CPU load; off by default because it costs a syscall. */
+        public boolean collectCpu = true;
+        /** Whether to walk loaded chunks for the chunk-activity metric; off by default. */
+        public boolean collectChunkActivity = false;
+        /** Whether to count entities each sample; a full iteration, so sampled coarsely. */
+        public boolean collectEntityCounts = true;
+        /** Ticks between two entity counts; entity counting is the most expensive metric. */
+        public int entityCountIntervalTicks = 100;
+        /** Interval between sweeps that drop expired data, in ticks. */
+        public int cleanupIntervalTicks = 1_200;
+    }
+
+    /** Alert thresholds; a crossing is recorded in the event history and shown on the dashboard. */
+    public static final class Alerts {
+        public boolean enabled = true;
+        /** MSPT above which a warning event is raised. */
+        public double msptWarn = 50.0;
+        /** TPS below which a warning event is raised. */
+        public double tpsWarn = 19.0;
+        /** Heap used fraction above which a warning event is raised. */
+        public double memoryWarnFraction = 0.9;
+        /** Bridge queue depth above which a warning event is raised. */
+        public int queueWarnDepth = 400;
+        /** Minimum gap between two alerts of the same kind, in seconds. */
+        public long alertCooldownSeconds = 60L;
     }
 }

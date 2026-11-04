@@ -6,16 +6,26 @@ import java.nio.file.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.adminmod.common.cache.PlayerCache;
 import com.adminmod.common.config.AdminConfig;
 import com.adminmod.common.config.ConfigLoader;
+import com.adminmod.common.config.ModularConfigLoader;
+import com.adminmod.common.diagnostics.ErrorReporter;
+import com.adminmod.common.diagnostics.EventHistory;
+import com.adminmod.common.diagnostics.MetricsRecorder;
 import com.adminmod.common.localchat.LocalChatFile;
 import com.adminmod.common.net.AdminProtocol;
+import com.adminmod.common.protection.ProtectionManager;
+import com.adminmod.common.protection.ViolationLog;
+import com.adminmod.common.model.PlayerSummary;
 import com.adminmod.server.auth.CredentialService;
 import com.adminmod.server.auth.PairingService;
 import com.adminmod.server.auth.PermissionService;
 import com.adminmod.server.chat.ChatBridgeService;
 import com.adminmod.server.chat.LocalChatService;
 import com.adminmod.server.command.AdminCommand;
+import com.adminmod.server.diagnostics.DiagnosticsService;
+import com.adminmod.server.diagnostics.PerformanceMonitor;
 import com.adminmod.server.moderation.ModerationService;
 import com.adminmod.server.moderation.ModerationStore;
 import com.adminmod.server.net.AdminPayload;
@@ -27,6 +37,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
+import net.fabricmc.fabric.api.networking.v1.ServerLoginConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.server.MinecraftServer;
@@ -48,6 +59,7 @@ public final class AdminServerMod implements ModInitializer {
 
     private static AdminConfig config;
     private static Path configPath;
+    private static Path configDirectory;
     private static Path localChatPath;
     private static CredentialService credentials;
     private static PairingService pairing;
@@ -57,6 +69,14 @@ public final class AdminServerMod implements ModInitializer {
     private static SessionManager sessions;
     private static RemoteRequestHandler requestHandler;
     private static ServerTicker ticker;
+    private static ProtectionManager protection;
+    private static PlayerCache<PlayerSummary> playerCache;
+    private static ErrorReporter errors;
+    private static EventHistory events;
+    private static MetricsRecorder metrics;
+    private static PerformanceMonitor performance;
+    private static DiagnosticsService diagnostics;
+    private static long startedAt = System.currentTimeMillis();
 
     @Override
     public void onInitialize() {
@@ -103,6 +123,11 @@ public final class AdminServerMod implements ModInitializer {
             if (active != null) {
                 active.close(handler.getPlayer().getUuid());
             }
+            ProtectionManager guard = protection;
+            if (guard != null) {
+                ServerPlayerEntity player = handler.getPlayer();
+                guard.onLeave(player.getUuidAsString(), player.getIp());
+            }
         });
 
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
@@ -110,12 +135,44 @@ public final class AdminServerMod implements ModInitializer {
             if (active != null) {
                 active.allowJoin(handler.getPlayer());
             }
+            ProtectionManager guard = protection;
+            if (guard != null) {
+                guard.onJoin(handler.getPlayer().getUuidAsString(), System.currentTimeMillis());
+            }
+        });
+
+        // Connection-level anti-crash: an address that opens connections faster than the configured
+        // rate is refused before it ever reaches the login handler. This runs on a netty thread, so
+        // it only touches the limiter, never the server.
+        ServerLoginConnectionEvents.INIT.register((handler, server) -> {
+            ProtectionManager guard = protection;
+            if (guard == null) {
+                return;
+            }
+            String address = handler.getConnectionInfo();
+            if (!guard.allowConnection(address, System.currentTimeMillis())) {
+                handler.disconnect(net.minecraft.text.Text.literal(
+                        "Too many connection attempts; please wait a moment and try again."));
+            }
+        });
+
+        ServerLoginConnectionEvents.DISCONNECT.register((handler, server) -> {
+            ProtectionManager guard = protection;
+            if (guard != null) {
+                guard.onConnectionClosed(handler.getConnectionInfo(), System.currentTimeMillis());
+            }
         });
 
         ServerTickEvents.END_SERVER_TICK.register(server -> {
+            long start = System.nanoTime();
             ServerTicker active = ticker;
             if (active != null) {
                 active.tick(server);
+            }
+            PerformanceMonitor monitor = performance;
+            if (monitor != null) {
+                monitor.recordAdminTickNanos(System.nanoTime() - start);
+                monitor.tick(server);
             }
         });
 
@@ -150,14 +207,28 @@ public final class AdminServerMod implements ModInitializer {
 
     private void onServerStarting(MinecraftServer server) {
         Path runDirectory = server.getRunDirectory();
+        configDirectory = runDirectory.resolve("config").resolve("admin");
         configPath = runDirectory.resolve("config").resolve("admin-mod.json");
 
+        ConfigLoader.ValidationReport report = new ConfigLoader.ValidationReport();
         try {
-            config = ConfigLoader.load(configPath);
+            config = ModularConfigLoader.load(configDirectory, configPath, report);
         } catch (IOException e) {
-            LOGGER.error("Could not read {}; falling back to defaults", configPath, e);
+            LOGGER.error("Could not read the configuration under {}; falling back to defaults", configDirectory, e);
             config = new AdminConfig();
         }
+        for (String note : report.notes()) {
+            LOGGER.info("Configuration: {}", note);
+        }
+        startedAt = System.currentTimeMillis();
+
+        // Diagnostics are built first: every other subsystem reports through them.
+        errors = new ErrorReporter(64, 32, null);
+        events = new EventHistory(config.performance.eventHistory);
+        metrics = new MetricsRecorder(config.performance.metricHistory);
+        protection = new ProtectionManager(config, errors, new ViolationLog(256));
+        playerCache = new PlayerCache<>(config.performance.playerCacheLimit, config.performance.playerCacheMillis);
+        performance = new PerformanceMonitor(config, metrics, events);
 
         try {
             credentials = CredentialService.open(runDirectory, config);
@@ -165,7 +236,7 @@ public final class AdminServerMod implements ModInitializer {
             if (config.remoteAdmin.vaultDirectory == null || config.remoteAdmin.vaultDirectory.isBlank()) {
                 config.remoteAdmin.vaultDirectory = credentials.directory().getFileName().toString();
                 try {
-                    ConfigLoader.save(configPath, config);
+                    ModularConfigLoader.save(configDirectory, config);
                 } catch (IOException e) {
                     LOGGER.error("Could not persist the credential directory name", e);
                 }
@@ -183,10 +254,10 @@ public final class AdminServerMod implements ModInitializer {
         }
         moderation = new ModerationService(store, config);
 
-        // Proximity settings live in their own file so they can be tuned without touching the large
-        // admin-mod.json. When that file exists it is authoritative; otherwise the section in
-        // admin-mod.json supplies the defaults and the file is created from it.
-        Path localChatPath = runDirectory.resolve("config").resolve("admin").resolve("localchat.json");
+        // Proximity settings live in their own file so they can be tuned without touching the
+        // module files. When that file exists it is authoritative; otherwise the section in
+        // localchat.json supplies the defaults and the file is created from it.
+        Path localChatPath = configDirectory.resolve("localchat.json");
         AdminServerMod.localChatPath = localChatPath;
         config.localChat = LocalChatFile.load(localChatPath, config.localChat);
 
@@ -212,6 +283,12 @@ public final class AdminServerMod implements ModInitializer {
 
         sessions = new SessionManager(credentials, config, permissions, requestHandler, localPairing, VERSION);
         requestHandler.setSessions(sessions);
+
+        Path reportsDirectory = configDirectory.resolve("reports");
+        diagnostics = new DiagnosticsService(config, server, performance, errors, events, metrics, reportsDirectory);
+        requestHandler.setDiagnostics(diagnostics);
+        requestHandler.setProtection(protection);
+
         ticker = new ServerTicker(config, sessions);
 
         // Inbound readers are started only now: the sink broadcasts through the server, which
@@ -245,6 +322,16 @@ public final class AdminServerMod implements ModInitializer {
         pairing = null;
         requestHandler = null;
         ticker = null;
+        diagnostics = null;
+        performance = null;
+        playerCache = null;
+        if (protection != null) {
+            protection.clear();
+        }
+        protection = null;
+        errors = null;
+        events = null;
+        metrics = null;
     }
 
     public static AdminConfig config() {
@@ -267,21 +354,24 @@ public final class AdminServerMod implements ModInitializer {
      * @return whether the reload succeeded, with a short description for the operator
      */
     public static ReloadOutcome reloadConfiguration() {
-        if (configPath == null || config == null) {
+        if (configDirectory == null || config == null) {
             return new ReloadOutcome(false, "the server is not running");
         }
         ConfigLoader.ValidationReport report = new ConfigLoader.ValidationReport();
         AdminConfig fresh;
         try {
-            fresh = ConfigLoader.load(configPath, report);
+            fresh = ModularConfigLoader.load(configDirectory, configPath, report);
         } catch (IOException e) {
             return new ReloadOutcome(false, "the configuration could not be read");
         }
         copyInto(config, fresh);
         // The proximity file is authoritative when present, so a reload reads it rather than the
-        // stale copy inside admin-mod.json.
+        // stale copy inside the module files.
         if (localChatPath != null) {
             config.localChat = LocalChatFile.load(localChatPath, config.localChat);
+        }
+        if (protection != null) {
+            protection.reload();
         }
         if (chatBridge != null) {
             chatBridge.reload();
@@ -292,6 +382,10 @@ public final class AdminServerMod implements ModInitializer {
         if (ticker != null) {
             ticker.resetAnnouncements();
         }
+        if (events != null) {
+            events.server("configuration reloaded (" + (report.isEmpty() ? "no corrections" : report.notes().size()
+                    + " correction(s)") + ")");
+        }
         String detail = report.isEmpty() ? "no corrections were needed"
                 : report.notes().size() + " correction(s) applied";
         return new ReloadOutcome(true, detail);
@@ -300,6 +394,8 @@ public final class AdminServerMod implements ModInitializer {
     /** Copies every top-level section of {@code source} onto {@code target}, keeping its identity. */
     private static void copyInto(AdminConfig target, AdminConfig source) {
         target.configVersion = source.configVersion;
+        target.profile = source.profile;
+        target.general = source.general;
         target.chatBridge = source.chatBridge;
         target.localChat = source.localChat;
         target.moderation = source.moderation;
@@ -307,6 +403,11 @@ public final class AdminServerMod implements ModInitializer {
         target.permissions = source.permissions;
         target.announcements = source.announcements;
         target.maintenance = source.maintenance;
+        target.anticheat = source.anticheat;
+        target.antidupe = source.antidupe;
+        target.protection = source.protection;
+        target.performance = source.performance;
+        target.alerts = source.alerts;
         target.logging = source.logging;
     }
 
@@ -350,5 +451,39 @@ public final class AdminServerMod implements ModInitializer {
 
     public static String protocolVersion() {
         return Integer.toString(AdminProtocol.PROTOCOL_VERSION);
+    }
+
+    /** The anti-crash guard, or {@code null} before the server has started. */
+    public static ProtectionManager protection() {
+        return protection;
+    }
+
+    /** The bounded per-player summary cache, or {@code null} before the server has started. */
+    public static PlayerCache<PlayerSummary> playerCache() {
+        return playerCache;
+    }
+
+    public static ErrorReporter errors() {
+        return errors;
+    }
+
+    public static EventHistory events() {
+        return events;
+    }
+
+    public static MetricsRecorder metrics() {
+        return metrics;
+    }
+
+    public static PerformanceMonitor performance() {
+        return performance;
+    }
+
+    public static DiagnosticsService diagnostics() {
+        return diagnostics;
+    }
+
+    public static long startedAt() {
+        return startedAt;
     }
 }

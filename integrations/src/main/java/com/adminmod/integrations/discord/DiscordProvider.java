@@ -67,18 +67,31 @@ public final class DiscordProvider implements ChatProvider {
         return "discord";
     }
 
+    /** Discord batches up to ten embeds, or a newline-joined block of content, in one request. */
     @Override
-    public boolean isConfigured() {
-        return webhookUrl.startsWith("https://") && webhookUrl.contains("/api/webhooks/");
+    public boolean supportsBatch() {
+        return true;
+    }
+
+    /** Most events one batched request may carry. */
+    public static int batchLimit(boolean useEmbeds) {
+        return useEmbeds ? 10 : 8;
     }
 
     @Override
-    public HttpResult deliver(ChatEvent event, Duration timeout) {
+    public HttpResult deliverBatch(java.util.List<ChatEvent> events, Duration timeout) {
         if (!isConfigured()) {
             lastError = "webhook URL is not configured";
             return HttpResult.failure(lastError);
         }
-        String body = GSON.toJson(buildPayload(event));
+        if (events == null || events.isEmpty()) {
+            return HttpResult.failure("empty batch");
+        }
+        String body = GSON.toJson(buildBatchPayload(events));
+        return post(body, timeout);
+    }
+
+    private HttpResult post(String body, Duration timeout) {
         try {
             HttpRequest request = HttpRequest.newBuilder(URI.create(webhookUrl))
                     .timeout(timeout)
@@ -101,6 +114,62 @@ public final class DiscordProvider implements ChatProvider {
             lastError = SecretRedactor.redact(describe(e));
             return HttpResult.failure(lastError);
         }
+    }
+
+    JsonObject buildBatchPayload(java.util.List<ChatEvent> events) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("username", truncate(username, 80));
+        if (!avatarUrl.isBlank()) {
+            payload.addProperty("avatar_url", avatarUrl);
+        }
+        if (useEmbeds) {
+            JsonArray embeds = new JsonArray();
+            for (ChatEvent event : events) {
+                embeds.add(buildEmbed(event));
+            }
+            payload.add("embeds", embeds);
+        } else {
+            StringBuilder content = new StringBuilder();
+            for (ChatEvent event : events) {
+                String rendered = Template.escapeDiscordMentions(
+                        Template.render(messageFormat, templateValues(event)));
+                if (content.length() > 0) {
+                    content.append('\n');
+                }
+                content.append(rendered);
+            }
+            payload.addProperty("content", truncate(content.toString(), 1900));
+        }
+        JsonObject allowedMentions = new JsonObject();
+        allowedMentions.add("parse", new JsonArray());
+        payload.add("allowed_mentions", allowedMentions);
+        return payload;
+    }
+
+    private JsonObject buildEmbed(ChatEvent event) {
+        Map<String, String> values = templateValues(event);
+        String rendered = Template.escapeDiscordMentions(Template.render(messageFormat, values));
+        JsonObject embed = new JsonObject();
+        embed.addProperty("description", truncate(rendered, Math.min(maxMessageLength, 4000)));
+        embed.addProperty("color", embedColor);
+        JsonObject footer = new JsonObject();
+        footer.addProperty("text", event.serverName());
+        embed.add("footer", footer);
+        return embed;
+    }
+
+    @Override
+    public boolean isConfigured() {
+        return webhookUrl.startsWith("https://") && webhookUrl.contains("/api/webhooks/");
+    }
+
+    @Override
+    public HttpResult deliver(ChatEvent event, Duration timeout) {
+        if (!isConfigured()) {
+            lastError = "webhook URL is not configured";
+            return HttpResult.failure(lastError);
+        }
+        return post(GSON.toJson(buildPayload(event)), timeout);
     }
 
     JsonObject buildPayload(ChatEvent event) {

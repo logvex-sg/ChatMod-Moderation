@@ -19,16 +19,26 @@ public record ChatEvent(
         String message,
         long timestampMillis,
         String serverName,
-        Channel channel) {
+        Channel channel,
+        Priority priority) {
 
-    /** Backwards-compatible constructor for ordinary public chat. */
+    /** Backwards-compatible constructor for ordinary public chat at normal priority. */
     public ChatEvent(String playerName, String playerUuid, String message, long timestampMillis, String serverName) {
-        this(playerName, playerUuid, message, timestampMillis, serverName, Channel.PUBLIC);
+        this(playerName, playerUuid, message, timestampMillis, serverName, Channel.PUBLIC, Priority.NORMAL);
+    }
+
+    /** Backwards-compatible constructor carrying a channel at normal priority. */
+    public ChatEvent(String playerName, String playerUuid, String message, long timestampMillis, String serverName,
+            Channel channel) {
+        this(playerName, playerUuid, message, timestampMillis, serverName, channel, Priority.NORMAL);
     }
 
     public ChatEvent {
         if (channel == null) {
             channel = Channel.PUBLIC;
+        }
+        if (priority == null) {
+            priority = Priority.NORMAL;
         }
     }
 

@@ -83,11 +83,35 @@ The project ships as **two independent JARs** that share one wire protocol:
 
 ### Remote administration
 
-- Eight-tab dashboard in the client: **Console, Players, OP Management, Moderation, Chat Bridge,
-  Local Chat, Access, Settings**.
+- Ten-tab dashboard in the client: **Console, Players, OP Management, Moderation, Chat Bridge,
+  Local Chat, Diagnostics, Protection, Access, Settings**.
 - Server-side command execution through the mod, with no command echo forwarded to the bridge.
 - OP grant, revoke, status and list, applied immediately.
 - Password-vault authentication, owner authorization, replay protection and rate limiting.
+
+### Anti-crash and abuse protection
+
+- Payload-shape validation that runs at the packet handler, before the vanilla logic: oversized
+  chat, book pages, sign lines and custom payloads are cancelled before they allocate; clicks are
+  checked against the open container's slot count and modified-stack cap; text carrying NUL or
+  other control characters is rejected.
+- Per-player rate limits for chat, commands, inventory clicks and entity interactions, plus a
+  two-window packet-frequency monitor (a one-second burst alone is not flagged, only a sustained
+  rate over both windows).
+- Repeat-click detection for the identical-click signature a dupe attempt produces.
+- Connection-level limiter: a per-address accept rate, a concurrent-connection cap and temporary
+  restrictions, all swept so a flood of spoofed addresses cannot grow the table.
+- A bounded violation log feeds the **Protection** dashboard tab.
+
+### Performance profiles and diagnostics
+
+- Three selectable profiles — `performance`, `balanced`, `maximum` — rewrite the protection,
+  anti-cheat and diagnostic thresholds. Every profile keeps the checks that only reject data no
+  legitimate client can produce, so a profile never silently disables protection.
+- A **Diagnostics** tab shows MSPT, TPS, ADMIN's own tick cost, heap use, queue depth, error
+  counters and a rolling event history, and can export a credential-free JSON report.
+- Every collection ADMIN keeps is bounded from configuration, and a periodic sweep drops expired
+  records rather than waiting for the bound to evict them.
 
 ---
 
@@ -258,7 +282,28 @@ live sessions and the authentication history, and can:
 
 ## 7. Configuration reference
 
-`config/admin-mod.json` is created with defaults on first run. A representative file:
+The configuration lives under `config/admin/`, split one file per concern so a single edit does
+not mean scrolling past the whole schema and a malformed file cannot take the others down:
+
+| File | Sections |
+| --- | --- |
+| `general.json` | `profile`, `general`, `announcements`, `maintenance`, `logging` |
+| `moderation.json` | `moderation`, `permissions` |
+| `anticheat.json` | `anticheat` |
+| `antidupe.json` | `antidupe` |
+| `chatbridge.json` | `chatBridge` |
+| `remoteadmin.json` | `remoteAdmin` |
+| `performance.json` | `performance`, `alerts` |
+| `protection.json` | `protection` |
+| `localchat.json` | proximity chat (written by the proximity service, not the split loader) |
+
+An existing single-file `admin-mod.json` is migrated once: it is read, split into the module files
+and kept beside them as `admin-mod.json.migrated`. A file that cannot be parsed is moved aside as
+`<name>.broken` and its defaults are used in memory, so one bad edit never stops the server. The
+module files are written with owner-only permissions where the filesystem supports it.
+
+A representative `chatbridge.json` (the shape of every file is the same: a JSON object keyed by
+the section names it owns):
 
 ```json
 {
@@ -420,6 +465,17 @@ live sessions and the authentication history, and can:
 
 Credentials are validated and clamped on load: blank secrets disable the affected integration
 instead of failing the server, and out-of-range numbers fall back to safe defaults.
+
+### Optimisation profiles
+
+`profile` (in `general.json`) is one of `performance`, `balanced` or `maximum`. Selecting a profile
+rewrites the protection, anti-cheat, anti-dupe and diagnostics thresholds; the individual values
+stay editable afterwards. Every profile keeps the checks that only reject data no legitimate client
+produces, so a profile is a starting point rather than a switch that can turn protection off. The
+**Diagnostics** tab can change it live.
+
+The `protection`, `anticheat`, `antidupe`, `performance` and `alerts` sections carry the individual
+limits — see the **Protection** tab for the live view of them.
 
 Server commands: `/adminmod status`, `/adminmod bridge`, `/adminmod vault`, `/adminmod pair`,
 `/adminmod clients`, `/adminmod reload`.
@@ -775,11 +831,22 @@ The suite covers, among other things:
 - Inbound formatting, sanitisation, de-duplication and receiver shutdown.
 - Proximity routing: radius and dimension rules, the staff bypass, global reach, the cooldown
   tracker, format parsing and colour handling, and the settings file.
+- Protection primitives: payload-shape validation, the per-key and per-address rate limiters, the
+  connection limiter's restriction window, repeat-click detection and the two-window packet-rate
+  monitor, plus the decision layer that routes each check and records a violation.
+- Modular configuration: file creation, per-module round trips, migration of the legacy file and
+  quarantine of a malformed one; and the optimisation profiles.
+- Bounded cache behaviour: TTL expiry, LRU eviction, sweeping and hit accounting.
 - **End-to-end Discord Gateway test** against a real local WebSocket server, which exercises the
   handshake, IDENTIFY frame and dispatch parsing.
+- **End-to-end webhook delivery** against a real loopback HTTP server: a public chat message is
+  rendered, sent over a real socket, and the dispatcher's retry, rate-limit (`Retry-After`) and
+  non-retryable-error paths are observed through the delivery counters.
 
 A dedicated-server smoke test (`./gradlew :server:runServer`) boots a real 1.21.1 server, writes
-the config and vault, and reaches `Done!`.
+the config and vault, and reaches `Done!`. The distributed `ADMIN-Server.jar` has also been run on
+a stock Fabric 1.21.1 dedicated server (fabric-loader 0.16.10) with only Fabric API alongside it:
+the mod loads, both mixins apply, the per-module config is written, and the server reaches `Done`.
 
 ---
 
@@ -833,9 +900,11 @@ Set `localChat.forwardToBridge` to true. The channel is available to the format 
 ## 19. Project layout
 
 ```
-common/         config model, wire format, packets, crypto helpers, proximity rules
+common/         config model, wire format, packets, crypto helpers, proximity rules,
+                anti-crash protection, bounded caches, diagnostics primitives
 integrations/   Discord, Matrix and webhook providers, inbound readers, dispatcher
-server/         Fabric dedicated-server mod: moderation, chat bridge, proximity delivery, remote admin endpoint
+server/         Fabric dedicated-server mod: moderation, chat bridge, proximity delivery,
+                protection mixins, performance monitor, remote admin endpoint
 client/         Fabric client mod: dashboard GUI and networking
 buildSrc/       build helpers (jar scanning)
 ```

@@ -68,7 +68,19 @@ public enum OrderType {
     /** Local chat tab: proximity settings and counters. No arguments. */
     LOCAL_CHAT_STATUS(30, PermissionLevel.VIEW),
     /** Local chat tab: change a proximity setting. Arguments: key, value. */
-    UPDATE_LOCAL_CHAT(31, PermissionLevel.OP_MANAGE);
+    UPDATE_LOCAL_CHAT(31, PermissionLevel.OP_MANAGE),
+    /** Diagnostics tab: live server health and ADMIN overhead. No arguments. */
+    DIAGNOSTICS_STATUS(32, PermissionLevel.VIEW),
+    /** Diagnostics tab: recent server and staff events. No arguments. */
+    DIAGNOSTICS_HISTORY(33, PermissionLevel.VIEW),
+    /** Diagnostics tab: write a diagnostic report and return its path. No arguments. */
+    EXPORT_REPORT(34, PermissionLevel.OP_MANAGE),
+    /** Settings tab: apply an optimisation profile. Arguments: profile. */
+    SET_PROFILE(35, PermissionLevel.OP_MANAGE),
+    /** Protection tab: live anti-crash thresholds, counters and recent triggers. No arguments. */
+    PROTECTION_STATUS(36, PermissionLevel.VIEW),
+    /** Protection tab: clear the violation counters. No arguments. */
+    CLEAR_VIOLATIONS(37, PermissionLevel.OP_MANAGE);
 
     /** Coarse capability required to run the order; refined by the server permission model. */
     public enum PermissionLevel {

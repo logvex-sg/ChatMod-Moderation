@@ -66,6 +66,11 @@ public final class Json {
         return element == null || element.isJsonNull() ? fallback : element.getAsLong();
     }
 
+    public static double dbl(JsonObject object, String key, double fallback) {
+        JsonElement element = object.get(key);
+        return element == null || element.isJsonNull() ? fallback : element.getAsDouble();
+    }
+
     public static List<String> stringList(JsonObject object, String key) {
         List<String> result = new ArrayList<>();
         JsonElement element = object.get(key);
