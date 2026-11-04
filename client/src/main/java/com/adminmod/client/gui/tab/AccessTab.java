@@ -170,6 +170,11 @@ public final class AccessTab extends DashboardTab {
     }
 
     @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        return clickHotZones(mouseX, mouseY);
+    }
+
+    @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         int top = y + 30;
         int half = Math.max(60, (height - 54) / 2);
