@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.adminmod.common.config.AdminConfig;
+import com.adminmod.common.localchat.Channel;
 import com.adminmod.common.model.Json;
 import com.adminmod.integrations.AntiSpamGuard;
 import com.adminmod.integrations.ChatDispatcher;
@@ -205,6 +206,25 @@ public final class ChatBridgeService {
      * @return {@code true} when the message was accepted for delivery
      */
     public boolean onPublicChat(String playerName, String playerUuid, String rawMessage) {
+        return onPublicChat(playerName, playerUuid, rawMessage, Channel.PUBLIC);
+    }
+
+    /**
+     * Submits a public chat message for forwarding, tagged with the channel it was sent on.
+     *
+     * <p>A proximity message that the feature chose not to forward is dropped here, before the
+     * queue, so it costs nothing on the network. Everything else follows the ordinary policy:
+     * commands and private messages are still refused by default.
+     *
+     * @param rawMessage the message exactly as the player typed it, before any decoration
+     * @param channel    the proximity channel, used to label the forwarded payload
+     * @return {@code true} when the message was accepted for delivery
+     */
+    public boolean onPublicChat(String playerName, String playerUuid, String rawMessage, Channel channel) {
+        Channel effective = channel == null ? Channel.PUBLIC : channel;
+        if (effective.isProximity() && !config.localChat.forwardToBridge) {
+            return false;
+        }
         ChatFilter policy = filter;
         if (!policy.shouldForward(rawMessage)) {
             return false;
@@ -219,7 +239,7 @@ public final class ChatBridgeService {
         if (!antiSpam.accept(key, body, System.currentTimeMillis())) {
             return false;
         }
-        dispatcher.enqueue(new ChatEvent(playerName, playerUuid, body, System.currentTimeMillis(), serverName));
+        dispatcher.enqueue(new ChatEvent(playerName, playerUuid, body, System.currentTimeMillis(), serverName, effective));
         return true;
     }
 

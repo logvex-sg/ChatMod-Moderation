@@ -8,11 +8,13 @@ import org.slf4j.LoggerFactory;
 
 import com.adminmod.common.config.AdminConfig;
 import com.adminmod.common.config.ConfigLoader;
+import com.adminmod.common.localchat.LocalChatFile;
 import com.adminmod.common.net.AdminProtocol;
 import com.adminmod.server.auth.CredentialService;
 import com.adminmod.server.auth.PairingService;
 import com.adminmod.server.auth.PermissionService;
 import com.adminmod.server.chat.ChatBridgeService;
+import com.adminmod.server.chat.LocalChatService;
 import com.adminmod.server.command.AdminCommand;
 import com.adminmod.server.moderation.ModerationService;
 import com.adminmod.server.moderation.ModerationStore;
@@ -46,10 +48,12 @@ public final class AdminServerMod implements ModInitializer {
 
     private static AdminConfig config;
     private static Path configPath;
+    private static Path localChatPath;
     private static CredentialService credentials;
     private static PairingService pairing;
     private static ModerationService moderation;
     private static ChatBridgeService chatBridge;
+    private static LocalChatService localChat;
     private static SessionManager sessions;
     private static RemoteRequestHandler requestHandler;
     private static ServerTicker ticker;
@@ -124,6 +128,17 @@ public final class AdminServerMod implements ModInitializer {
                     message.getContent().getString());
         });
 
+        // Proximity routing runs inside the broadcast, before delivery and before CHAT_MESSAGE. When
+        // the service takes the message over it returns false, which cancels the vanilla broadcast so
+        // nobody receives the message twice, and forwards it itself with its channel tag.
+        ServerMessageEvents.ALLOW_CHAT_MESSAGE.register((message, sender, params) -> {
+            LocalChatService local = localChat;
+            if (local == null) {
+                return true;
+            }
+            return !local.dispatch(sender, message.getSignedContent());
+        });
+
         ServerMessageEvents.GAME_MESSAGE.register((server, message, overlay) -> {
             ChatBridgeService bridge = chatBridge;
             if (bridge == null || overlay) {
@@ -168,11 +183,20 @@ public final class AdminServerMod implements ModInitializer {
         }
         moderation = new ModerationService(store, config);
 
+        // Proximity settings live in their own file so they can be tuned without touching the large
+        // admin-mod.json. When that file exists it is authoritative; otherwise the section in
+        // admin-mod.json supplies the defaults and the file is created from it.
+        Path localChatPath = runDirectory.resolve("config").resolve("admin").resolve("localchat.json");
+        AdminServerMod.localChatPath = localChatPath;
+        config.localChat = LocalChatFile.load(localChatPath, config.localChat);
+
         chatBridge = ChatBridgeService.create(config, server.getSaveProperties().getLevelName(), server);
+        localChat = new LocalChatService(config, server, chatBridge, moderation);
 
         PermissionService permissions = new PermissionService(config);
         requestHandler = new RemoteRequestHandler(server, config, configPath, permissions, moderation, chatBridge,
                 credentials);
+        requestHandler.setLocalChat(localChat, localChatPath);
 
         PairingService localPairing = null;
         if (credentials != null) {
@@ -194,9 +218,9 @@ public final class AdminServerMod implements ModInitializer {
         // must be fully constructed before the first message can arrive.
         chatBridge.startInbound();
 
-        LOGGER.info("ADMIN Mod {} ready (remote admin: {}, chat bridge: {}, inbound chat: {})", VERSION,
+        LOGGER.info("ADMIN Mod {} ready (remote admin: {}, chat bridge: {}, inbound chat: {}, local chat: {})", VERSION,
                 config.remoteAdmin.enabled && credentials != null, config.chatBridge.enabled,
-                config.chatBridge.inbound.enabled);
+                config.chatBridge.inbound.enabled, config.localChat.enabled);
     }
 
     private void onServerStopping(MinecraftServer server) {
@@ -215,6 +239,7 @@ public final class AdminServerMod implements ModInitializer {
         }
         sessions = null;
         chatBridge = null;
+        localChat = null;
         moderation = null;
         credentials = null;
         pairing = null;
@@ -253,8 +278,16 @@ public final class AdminServerMod implements ModInitializer {
             return new ReloadOutcome(false, "the configuration could not be read");
         }
         copyInto(config, fresh);
+        // The proximity file is authoritative when present, so a reload reads it rather than the
+        // stale copy inside admin-mod.json.
+        if (localChatPath != null) {
+            config.localChat = LocalChatFile.load(localChatPath, config.localChat);
+        }
         if (chatBridge != null) {
             chatBridge.reload();
+        }
+        if (localChat != null) {
+            localChat.reload();
         }
         if (ticker != null) {
             ticker.resetAnnouncements();
@@ -268,6 +301,7 @@ public final class AdminServerMod implements ModInitializer {
     private static void copyInto(AdminConfig target, AdminConfig source) {
         target.configVersion = source.configVersion;
         target.chatBridge = source.chatBridge;
+        target.localChat = source.localChat;
         target.moderation = source.moderation;
         target.remoteAdmin = source.remoteAdmin;
         target.permissions = source.permissions;
@@ -290,6 +324,15 @@ public final class AdminServerMod implements ModInitializer {
 
     public static ChatBridgeService chatBridge() {
         return chatBridge;
+    }
+
+    public static LocalChatService localChat() {
+        return localChat;
+    }
+
+    /** The file the proximity settings are stored in, or {@code null} before the server starts. */
+    public static Path localChatPath() {
+        return localChatPath;
     }
 
     public static SessionManager sessions() {

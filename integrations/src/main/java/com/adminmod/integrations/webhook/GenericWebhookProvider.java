@@ -120,8 +120,11 @@ public final class GenericWebhookProvider implements ChatProvider {
         values.put("message", Template.escapeJson(message));
         values.put("timestamp", Template.escapeJson(ISO.format(Instant.ofEpochMilli(event.timestampMillis()).atZone(ZoneId.systemDefault()))));
         values.put("server", Template.escapeJson(event.serverName()));
+        values.put("channel", Template.escapeJson(event.channel().name()));
+        values.put("channel_label", Template.escapeJson(event.channelLabel()));
         values.put("raw_player", event.playerName());
         values.put("raw_message", message);
+        values.put("raw_channel", event.channelLabel());
         return Template.render(payloadTemplate, values);
     }
 

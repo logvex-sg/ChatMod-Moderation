@@ -169,4 +169,47 @@ class ChatBridgeServiceTest {
         assertEquals(1, transport.uris.size());
         bridge.close();
     }
+
+    @Test
+    void aProximityMessageIsForwardedWhenTheFeatureAllowsIt() {
+        AdminConfig config = config();
+        config.localChat.forwardToBridge = true;
+        CountingTransport transport = new CountingTransport();
+        ChatBridgeService bridge = new ChatBridgeService(config, "Server", transport);
+
+        assertTrue(bridge.onPublicChat("Alex", "uuid", "psst",
+                com.adminmod.common.localchat.Channel.LOCAL));
+        awaitDelivery(transport);
+        assertEquals(1, transport.uris.size(), "a local message reaches the bridge when allowed");
+        bridge.close();
+    }
+
+    @Test
+    void aProximityMessageIsDroppedBeforeTheQueueWhenForwardingIsOff() {
+        AdminConfig config = config();
+        config.localChat.forwardToBridge = false;
+        CountingTransport transport = new CountingTransport();
+        ChatBridgeService bridge = new ChatBridgeService(config, "Server", transport);
+
+        assertFalse(bridge.onPublicChat("Alex", "uuid", "psst",
+                com.adminmod.common.localchat.Channel.LOCAL), "the message is refused up front");
+        try {
+            Thread.sleep(300L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        assertTrue(transport.uris.isEmpty(), "nothing may reach the network");
+        bridge.close();
+    }
+
+    @Test
+    void aCommandIsStillRefusedWhenTaggedWithAProximityChannel() {
+        CountingTransport transport = new CountingTransport();
+        ChatBridgeService bridge = new ChatBridgeService(config(), "Server", transport);
+
+        assertFalse(bridge.onPublicChat("Alex", "uuid", "/op Alex",
+                com.adminmod.common.localchat.Channel.GLOBAL),
+                "a command must never be forwarded, whatever the channel tag");
+        bridge.close();
+    }
 }

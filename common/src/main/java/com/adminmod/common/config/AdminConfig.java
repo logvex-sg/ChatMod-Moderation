@@ -19,6 +19,7 @@ public final class AdminConfig {
     public int configVersion = ConfigLoader.CURRENT_VERSION;
 
     public ChatBridge chatBridge = new ChatBridge();
+    public LocalChat localChat = new LocalChat();
     public Moderation moderation = new Moderation();
     public RemoteAdmin remoteAdmin = new RemoteAdmin();
     public Permissions permissions = new Permissions();
@@ -61,6 +62,76 @@ public final class AdminConfig {
          * upgraded server keeps forwarding outbound chat exactly as before.
          */
         public Inbound inbound = new Inbound();
+    }
+
+    /**
+     * Proximity ("local") chat settings.
+     *
+     * <p>When enabled, ordinary chat is delivered only to players within {@code radius} blocks of
+     * the sender in the same dimension; a message beginning with {@code globalPrefix} is broadcast
+     * to everyone instead. Distribution is server-authoritative: the client never decides who can
+     * see a message.
+     *
+     * <p>These values are mirrored to {@code config/admin/localchat.json} so the feature can be
+     * tuned in its own file; {@code admin-mod.json} keeps the section for compatibility.
+     */
+    public static final class LocalChat {
+        /** Master switch. When off, chat behaves exactly as vanilla. */
+        public boolean enabled = false;
+        /** Delivery radius for a local message, in blocks. */
+        public double radius = 50.0;
+        /** A message beginning with this prefix is sent globally instead of locally. */
+        public String globalPrefix = "!";
+        /**
+         * Rendered for a local message. {@code %player%}, {@code %message%}, {@code %radius%},
+         * {@code %world%} and {@code %count%} are substituted; colour codes use {@code &}.
+         * The local and global formats carry their own colours, so the two channels can be
+         * distinguished at a glance.
+         */
+        public String localFormat = "[Local] &f%player%&7: &f%message%";
+        /** Rendered for a global message. See {@link #localFormat} for the placeholders. */
+        public String globalFormat = "[Global] &f%player%&7: &f%message%";
+        /** When true, a global message reaches every online player regardless of dimension. */
+        public boolean globalReachesAllDimensions = true;
+        /** Staff always receive local chat, ignoring the radius, so moderation stays possible. */
+        public boolean staffBypass = true;
+        /** Minecraft permission level at or above which the staff bypass applies. */
+        public int staffLevel = 2;
+        /** Sends a subtle sound to a player when they receive a local message. */
+        public boolean soundEnabled = false;
+        /** Sound id played on receipt, e.g. {@code minecraft:entity.experience_orb.pickup}. */
+        public String soundId = "minecraft:entity.experience_orb.pickup";
+        public float soundVolume = 0.5f;
+        public float soundPitch = 1.2f;
+        /** Minimum gap between two chat messages from one player, in milliseconds. 0 disables. */
+        public long cooldownMillis = 750L;
+        /** Tells the sender how many players heard a local message. */
+        public boolean showRecipientCount = false;
+        /** Shown to the sender when nobody is within range. Empty means say nothing. */
+        public String noRecipientsMessage = "&7Nobody is close enough to hear you.";
+        /** Applies the moderation keyword filter and the bridge anti-spam guard to local chat. */
+        public boolean filterMessages = true;
+        /** Forwards local and global messages to the external bridge with their channel type. */
+        public boolean forwardToBridge = true;
+        /** Per-dimension overrides, matched by dimension id; the first match wins. */
+        public List<DimensionRule> dimensions = List.of();
+    }
+
+    /** Per-dimension override of the proximity settings. */
+    public static final class DimensionRule {
+        /** Dimension id, e.g. {@code minecraft:overworld}. */
+        public String dimension = "";
+        public boolean enabled = true;
+        /** Radius override; values at or below zero fall back to the global radius. */
+        public double radius = 0.0;
+        /** Local format override; empty falls back to the global setting. */
+        public String localFormat = "";
+        /** Global format override; empty falls back to the global setting. */
+        public String globalFormat = "";
+        /** Global prefix override; empty falls back to the global setting. */
+        public String globalPrefix = "";
+        /** Global-reach override; {@code null} falls back to the global setting. */
+        public Boolean globalReachesAllDimensions = null;
     }
 
     /** One extra Discord destination, sharing the shape of the primary webhook settings. */

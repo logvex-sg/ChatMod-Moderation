@@ -26,12 +26,13 @@ The project ships as **two independent JARs** that share one wire protocol:
 10. [Matrix setup](#10-matrix-setup)
 11. [Generic webhook setup](#11-generic-webhook-setup)
 12. [Moderation](#12-moderation)
-13. [Remote administration](#13-remote-administration)
-14. [Security model](#14-security-model)
-15. [Performance](#15-performance)
-16. [Testing](#16-testing)
-17. [Troubleshooting](#17-troubleshooting)
-18. [Project layout](#18-project-layout)
+13. [Proximity chat](#13-proximity-chat)
+14. [Remote administration](#14-remote-administration)
+15. [Security model](#15-security-model)
+16. [Performance](#16-performance)
+17. [Testing](#17-testing)
+18. [Troubleshooting](#18-troubleshooting)
+19. [Project layout](#19-project-layout)
 
 ---
 
@@ -65,10 +66,25 @@ The project ships as **two independent JARs** that share one wire protocol:
   identity, reason and timestamps.
 - Configurable default and maximum durations, and an option to require a reason.
 
+### Proximity ("local") chat
+
+- When enabled, an ordinary chat message is delivered only to players near the sender **in the
+  same dimension**; a message beginning with the configured prefix (`!` by default) is broadcast
+  to everyone instead.
+- The recipient set is computed server-side from positions the server already knows, so a modified
+  client cannot widen its own reach.
+- Staff with the configured permission level can hear every local message, so moderation stays
+  possible.
+- Per-dimension overrides (radius, formats, prefix, enable/disable) and an optional cooldown.
+- Proximity messages are labelled `[Local]`/`[Global]` in the bridge payload, so a Discord or
+  Matrix format can tell the two channels apart, and forwarding can be turned off independently.
+- Settings live in `config/admin/localchat.json` and are editable from the client dashboard's
+  **Local Chat** tab.
+
 ### Remote administration
 
-- Six-tab dashboard in the client: **Console, Players, OP Management, Moderation, Chat Bridge,
-  Settings**.
+- Eight-tab dashboard in the client: **Console, Players, OP Management, Moderation, Chat Bridge,
+  Local Chat, Access, Settings**.
 - Server-side command execution through the mod, with no command echo forwarded to the bridge.
 - OP grant, revoke, status and list, applied immediately.
 - Password-vault authentication, owner authorization, replay protection and rate limiting.
@@ -382,6 +398,20 @@ live sessions and the authentication history, and can:
     "kickNonOperators": false,
     "allowList": []
   },
+  "localChat": {
+    "enabled": false,
+    "radius": 50.0,
+    "globalPrefix": "!",
+    "localFormat": "[Local] &f%player%&7: &f%message%",
+    "globalFormat": "[Global] &f%player%&7: &f%message%",
+    "globalReachesAllDimensions": true,
+    "staffBypass": true,
+    "staffLevel": 2,
+    "cooldownMillis": 750,
+    "filterMessages": true,
+    "forwardToBridge": true,
+    "dimensions": []
+  },
   "logging": {
     "level": "info"
   }
@@ -571,7 +601,74 @@ Actions are available from the **Players** and **Moderation** tabs, and every on
 
 ---
 
-## 13. Remote administration
+## 13. Proximity chat
+
+Proximity chat makes ordinary chat local: a message is delivered only to players near the sender
+in the same dimension. A message beginning with the configured prefix is broadcast to everyone
+instead. The feature is off until `localChat.enabled` is set.
+
+```json
+"localChat": {
+  "enabled": false,
+  "radius": 50.0,
+  "globalPrefix": "!",
+  "localFormat": "[Local] &f%player%&7: &f%message%",
+  "globalFormat": "[Global] &f%player%&7: &f%message%",
+  "globalReachesAllDimensions": true,
+  "staffBypass": true,
+  "staffLevel": 2,
+  "soundEnabled": false,
+  "soundId": "minecraft:entity.experience_orb.pickup",
+  "cooldownMillis": 750,
+  "showRecipientCount": false,
+  "noRecipientsMessage": "&7Nobody is close enough to hear you.",
+  "filterMessages": true,
+  "forwardToBridge": true,
+  "dimensions": [
+    { "dimension": "minecraft:the_nether", "enabled": true, "radius": 16.0,
+      "localFormat": "", "globalFormat": "", "globalPrefix": "",
+      "globalReachesAllDimensions": null }
+  ]
+}
+```
+
+The same settings can live in the standalone `config/admin/localchat.json`, which is written with
+owner-only permissions on first start. When that file exists it is the source of truth; otherwise
+the `localChat` section of `admin-mod.json` is used.
+
+| Field | Meaning |
+| --- | --- |
+| `enabled` | Master switch. When off, chat behaves exactly as vanilla. |
+| `radius` | Delivery radius for a local message, in blocks. |
+| `globalPrefix` | A message starting with this is sent globally instead of locally. |
+| `localFormat` / `globalFormat` | Rendered lines. Placeholders: `%player%`, `%message%`, `%radius%`, `%count%`, `%world%`, `%channel%`. Colour codes use `&`. |
+| `globalReachesAllDimensions` | When true a global message reaches every player; when false only the sender's dimension. |
+| `staffBypass` / `staffLevel` | Staff at or above this permission level hear every local message. |
+| `soundEnabled`, `soundId`, `soundVolume`, `soundPitch` | Optional receipt sound. |
+| `cooldownMillis` | Minimum gap between one player's messages. `0` disables. |
+| `showRecipientCount` / `noRecipientsMessage` | Feedback to the sender about who heard them. |
+| `filterMessages` | Applies the moderation keyword filter and the bridge anti-spam guard to local chat. |
+| `forwardToBridge` | Forwards local and global messages to Discord/Matrix/webhook with their channel tag. |
+| `dimensions` | Per-dimension overrides; the first match wins, and a blank field inherits the global value. |
+
+How it behaves:
+
+- **Delivery is server-authoritative.** The recipient set is computed from the positions and
+  dimensions the server already knows. Nothing a client sends can widen its own reach.
+- **The sender always hears their own line**, so their client shows it once with the same
+  decoration everyone else sees.
+- **Global messages** reach everyone (or everyone in the sender's dimension, if
+  `globalReachesAllDimensions` is false). A per-dimension rule can override that for one world.
+- **Commands are never turned into chat.** A message that is a command is left to vanilla.
+- **Mutes still apply.** A muted player's message is refused here as well as in the vanilla
+  broadcast path.
+- **The bridge sees the channel.** A forwarded proximity message carries `%channel%` (`LOCAL` or
+  `GLOBAL`) and `%channel_label%` (`Local`/`Global`), so a Discord or Matrix format can label it.
+  Ordinary public chat has an empty label.
+- **Editing live:** the client dashboard's **Local Chat** tab reads the current state and writes
+  changes through the same authenticated order channel as every other tab.
+
+## 14. Remote administration
 
 Open the dashboard in-game with the configured key (default **`]`**).
 
@@ -582,6 +679,7 @@ Open the dashboard in-game with the configured key (default **`]`**).
 | **OP Management** | Grant, revoke, check and list operators, applied immediately. |
 | **Moderation** | History, warnings, notes and punishment management. |
 | **Chat Bridge** | Connection status, active integrations, inbound reader state and recent delivery errors. |
+| **Local Chat** | Proximity settings: enable, radius, prefix, formats, staff bypass, sound, cooldown and per-dimension overrides. Reads live state from the server and writes changes back. |
 | **Access** | Pairing keys, paired-client list, live sessions, authentication history, credential rotation. |
 | **Settings** | Authentication state, connection details, redacted server settings and safe toggles. |
 
@@ -630,7 +728,7 @@ There are no hidden backdoors and no administrative path that bypasses these che
 
 ---
 
-## 14. Security model
+## 15. Security model
 
 - **Credentials stay server-side.** Webhook URLs, bot tokens, Matrix access tokens, the vault
   password and paired-client secrets are never sent to a client, and never written to the log. The
@@ -651,7 +749,7 @@ There are no hidden backdoors and no administrative path that bypasses these che
 
 ---
 
-## 15. Performance
+## 16. Performance
 
 - All outbound HTTP happens on a dedicated dispatcher thread with a **bounded queue**; a full
   queue drops the oldest entry rather than stalling the tick.
@@ -662,7 +760,7 @@ There are no hidden backdoors and no administrative path that bypasses these che
 
 ---
 
-## 16. Testing
+## 17. Testing
 
 ```bash
 ./gradlew test
@@ -675,6 +773,8 @@ The suite covers, among other things:
 - Config loading, clamping, defaults and redaction.
 - Moderation service behaviour and permission decisions.
 - Inbound formatting, sanitisation, de-duplication and receiver shutdown.
+- Proximity routing: radius and dimension rules, the staff bypass, global reach, the cooldown
+  tracker, format parsing and colour handling, and the settings file.
 - **End-to-end Discord Gateway test** against a real local WebSocket server, which exercises the
   handshake, IDENTIFY frame and dispatch parsing.
 
@@ -683,7 +783,7 @@ the config and vault, and reaches `Done!`.
 
 ---
 
-## 17. Troubleshooting
+## 18. Troubleshooting
 
 **Chat does not appear on Discord/Matrix.**
 Check `chatBridge.enabled` is true and `provider` names the integration you configured. Run
@@ -714,14 +814,28 @@ Both sides must run the same protocol version. Update both JARs together.
 **The credential folder is missing.**
 It is created on first server start. Ensure the server process can write to its run directory.
 
+**Proximity chat is on but everyone hears everything.**
+Check that `localChat.enabled` is true and that no per-dimension rule disables the world. A message
+beginning with `globalPrefix` (`!` by default) is meant to reach everyone. Verify the radius and
+that `globalReachesAllDimensions` is not being used as a workaround.
+
+**A player is not hearing nearby chat.**
+They must be in the same dimension as the sender and within `radius` blocks. Check the per-dimension
+rule for that world: a rule can shrink the radius or disable the feature entirely. A staff member
+with the bypass on always hears it, so test with a non-staff account.
+
+**Local chat is not reaching Discord/Matrix.**
+Set `localChat.forwardToBridge` to true. The channel is available to the format as `%channel%` and
+`%channel_label%`; ordinary public chat has an empty label.
+
 ---
 
-## 18. Project layout
+## 19. Project layout
 
 ```
-common/         config model, wire format, packets, crypto helpers
+common/         config model, wire format, packets, crypto helpers, proximity rules
 integrations/   Discord, Matrix and webhook providers, inbound readers, dispatcher
-server/         Fabric dedicated-server mod: moderation, chat bridge, remote admin endpoint
+server/         Fabric dedicated-server mod: moderation, chat bridge, proximity delivery, remote admin endpoint
 client/         Fabric client mod: dashboard GUI and networking
 buildSrc/       build helpers (jar scanning)
 ```

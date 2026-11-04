@@ -185,4 +185,37 @@ class ProvidersTest {
         long capped = policy.delayMillis(30);
         assertTrue(capped <= 10_000L);
     }
+
+    @Test
+    void aProximityMessageCarriesItsChannelLabel() {
+        RecordingTransport transport = new RecordingTransport(new HttpResult(204, ""));
+        DiscordProvider provider = new DiscordProvider(transport,
+                "https://discord.com/api/webhooks/1/token", "Server", "", false, "%channel_label% %player%: %message%",
+                0x5865F2, 2000);
+        ChatEvent local = new ChatEvent("Alex", "uuid", "hi", 0L, "S",
+                com.adminmod.common.localchat.Channel.LOCAL);
+        ChatEvent global = new ChatEvent("Alex", "uuid", "hi", 0L, "S",
+                com.adminmod.common.localchat.Channel.GLOBAL);
+
+        provider.deliver(local, Duration.ofSeconds(1));
+        provider.deliver(global, Duration.ofSeconds(1));
+
+        assertTrue(transport.bodies.get(0).contains("Local Alex: hi"),
+                "body=" + transport.bodies);
+        assertTrue(transport.bodies.get(1).contains("Global Alex: hi"),
+                "a global message is labelled Global");
+    }
+
+    @Test
+    void anOrdinaryPublicMessageCarriesNoChannelLabel() {
+        RecordingTransport transport = new RecordingTransport(new HttpResult(204, ""));
+        DiscordProvider provider = new DiscordProvider(transport,
+                "https://discord.com/api/webhooks/1/token", "Server", "", false, "[%channel_label%]%player%",
+                0x5865F2, 2000);
+
+        // The default constructor tags ordinary chat as PUBLIC, whose label is empty.
+        provider.deliver(EVENT, Duration.ofSeconds(1));
+        assertTrue(transport.bodies.get(0).contains("[]Alex"),
+                "ordinary public chat has an empty channel label");
+    }
 }

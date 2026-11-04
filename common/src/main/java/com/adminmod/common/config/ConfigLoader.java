@@ -165,6 +165,21 @@ public final class ConfigLoader {
         if (config.chatBridge.inbound.matrix.extraRoomIds == null) {
             config.chatBridge.inbound.matrix.extraRoomIds = List.of();
         }
+        if (config.localChat == null) {
+            config.localChat = new AdminConfig.LocalChat();
+        }
+        if (config.localChat.dimensions == null) {
+            config.localChat.dimensions = List.of();
+        }
+        if (config.localChat.globalPrefix == null) {
+            config.localChat.globalPrefix = "!";
+        }
+        if (config.localChat.soundId == null) {
+            config.localChat.soundId = "minecraft:entity.experience_orb.pickup";
+        }
+        if (config.localChat.noRecipientsMessage == null) {
+            config.localChat.noRecipientsMessage = "";
+        }
         if (config.moderation == null) {
             config.moderation = new AdminConfig.Moderation();
         }
@@ -221,6 +236,33 @@ public final class ConfigLoader {
         clampInt(report, "chatBridge.inbound.maxMessageLength", config.chatBridge.inbound.maxMessageLength, 16, 4_096, v -> config.chatBridge.inbound.maxMessageLength = v);
         clampInt(report, "chatBridge.inbound.matrix.syncTimeoutMillis", config.chatBridge.inbound.matrix.syncTimeoutMillis, 1_000, 300_000, v -> config.chatBridge.inbound.matrix.syncTimeoutMillis = v);
         clampInt(report, "chatBridge.inbound.matrix.syncLimit", config.chatBridge.inbound.matrix.syncLimit, 1, 1_000, v -> config.chatBridge.inbound.matrix.syncLimit = v);
+
+        // Proximity chat. The radius and cooldown floors matter: a zero radius would make local chat
+        // useless, and a negative cooldown would disable the rate limit.
+        if (config.localChat.globalPrefix == null) {
+            config.localChat.globalPrefix = "!";
+        }
+        if (config.localChat.localFormat == null || config.localChat.localFormat.isBlank()) {
+            config.localChat.localFormat = "[Local] &f%player%&7: &f%message%";
+        }
+        if (config.localChat.globalFormat == null || config.localChat.globalFormat.isBlank()) {
+            config.localChat.globalFormat = "[Global] &f%player%&7: &f%message%";
+        }
+        if (config.localChat.soundId == null || config.localChat.soundId.isBlank()) {
+            config.localChat.soundId = "minecraft:entity.experience_orb.pickup";
+        }
+        if (config.localChat.noRecipientsMessage == null) {
+            config.localChat.noRecipientsMessage = "";
+        }
+        if (config.localChat.dimensions == null) {
+            config.localChat.dimensions = List.of();
+        }
+        if (config.localChat.radius <= 0) {
+            report.add("localChat.radius was not positive; using the default of 50");
+            config.localChat.radius = 50.0;
+        }
+        clampInt(report, "localChat.staffLevel", config.localChat.staffLevel, 0, 4, v -> config.localChat.staffLevel = v);
+        clampLong(report, "localChat.cooldownMillis", config.localChat.cooldownMillis, 0L, 600_000L, v -> config.localChat.cooldownMillis = v);
 
         clampLong(report, "moderation.maxPunishmentSeconds", config.moderation.maxPunishmentSeconds, 60L, 315_360_000L, v -> config.moderation.maxPunishmentSeconds = v);
         clampLong(report, "moderation.defaultTempBanSeconds", config.moderation.defaultTempBanSeconds, 0L, config.moderation.maxPunishmentSeconds, v -> config.moderation.defaultTempBanSeconds = v);

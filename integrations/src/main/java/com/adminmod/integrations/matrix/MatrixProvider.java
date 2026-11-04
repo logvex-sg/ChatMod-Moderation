@@ -114,6 +114,8 @@ public final class MatrixProvider implements ChatProvider {
         values.put("message", com.adminmod.integrations.text.TextSanitizer.clean(event.message(), maxMessageLength));
         values.put("timestamp", Long.toString(event.timestampMillis()));
         values.put("server", com.adminmod.integrations.text.TextSanitizer.clean(event.serverName(), 64));
+        values.put("channel", event.channel().name());
+        values.put("channel_label", com.adminmod.integrations.text.TextSanitizer.clean(event.channelLabel(), 16));
         return com.adminmod.integrations.text.TextSanitizer.truncate(
                 Template.render(messageFormat, values), maxMessageLength);
     }

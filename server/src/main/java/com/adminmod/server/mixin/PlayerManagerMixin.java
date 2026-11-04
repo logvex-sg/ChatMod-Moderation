@@ -17,11 +17,17 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Enforces mutes by suppressing the broadcast of a muted player's chat.
  *
- * <p>Cancelling at {@code broadcast} rather than at the packet handler means the message never
- * reaches any player and never reaches the chat bridge, which is what "muted" has to mean. The
- * sender is still told the message was blocked.
+ * <p>Cancelling at {@code broadcast} rather than at the packet handler means a suppressed message
+ * never reaches any player and never reaches the chat bridge, which is what "muted" has to mean.
+ * The same point is where proximity chat intervenes, but that uses the Fabric
+ * {@code ServerMessageEvents.ALLOW_CHAT_MESSAGE} hook rather than a mixin, so this class stays
+ * limited to the mute rule.
+ *
+ * <p>The priority is raised above the default so the mute check runs before Fabric's own injection
+ * at the same point, which is what fires the chat events; a muted message is therefore suppressed
+ * before any listener can observe it.
  */
-@Mixin(PlayerManager.class)
+@Mixin(value = PlayerManager.class, priority = 1100)
 public abstract class PlayerManagerMixin {
 
     @Inject(method = "broadcast(Lnet/minecraft/network/message/SignedMessage;Lnet/minecraft/server/network/ServerPlayerEntity;Lnet/minecraft/network/message/MessageType$Parameters;)V",

@@ -142,6 +142,9 @@ public final class DiscordProvider implements ChatProvider {
         values.put("message", Template.escapeJson(event.message()));
         values.put("timestamp", TIME.format(Instant.ofEpochMilli(event.timestampMillis()).atZone(ZoneId.systemDefault())));
         values.put("server", Template.escapeJson(event.serverName()));
+        // The proximity channel, so a Discord format can render "[Local] Alex: hi" or branch on it.
+        values.put("channel", event.channel().name());
+        values.put("channel_label", event.channelLabel());
         return values;
     }
 

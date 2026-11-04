@@ -64,7 +64,11 @@ public enum OrderType {
     /** Pairing tab: rotate the shared password or a client secret. Arguments: target. */
     CREDENTIAL_ROTATE(28, PermissionLevel.PAIRING),
     /** Pairing tab: grant OP to the authenticated owner. No arguments. */
-    OP_GRANT_OWNER(29, PermissionLevel.PAIRING);
+    OP_GRANT_OWNER(29, PermissionLevel.PAIRING),
+    /** Local chat tab: proximity settings and counters. No arguments. */
+    LOCAL_CHAT_STATUS(30, PermissionLevel.VIEW),
+    /** Local chat tab: change a proximity setting. Arguments: key, value. */
+    UPDATE_LOCAL_CHAT(31, PermissionLevel.OP_MANAGE);
 
     /** Coarse capability required to run the order; refined by the server permission model. */
     public enum PermissionLevel {

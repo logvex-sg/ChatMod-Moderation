@@ -12,6 +12,7 @@ import java.util.UUID;
 import com.adminmod.common.config.AdminConfig;
 import com.adminmod.common.config.ConfigLoader;
 import com.adminmod.common.config.ConfigRedactor;
+import com.adminmod.common.localchat.LocalChatFile;
 import com.adminmod.common.model.DurationParser;
 import com.adminmod.common.model.Json;
 import com.adminmod.common.model.PlayerSummary;
@@ -26,6 +27,7 @@ import com.adminmod.server.auth.CredentialService;
 import com.adminmod.server.auth.PairingService;
 import com.adminmod.server.auth.PermissionService;
 import com.adminmod.server.chat.ChatBridgeService;
+import com.adminmod.server.chat.LocalChatService;
 import com.adminmod.server.moderation.ModerationService;
 import com.mojang.authlib.GameProfile;
 import com.mojang.brigadier.ParseResults;
@@ -65,6 +67,8 @@ public final class RemoteRequestHandler {
     private final CredentialService credentials;
     private PairingService pairing;
     private SessionManager sessions;
+    private LocalChatService localChat;
+    private Path localChatPath;
 
     public RemoteRequestHandler(MinecraftServer server, AdminConfig config, Path configPath,
             PermissionService permissions, ModerationService moderation, ChatBridgeService chatBridge,
@@ -86,6 +90,12 @@ public final class RemoteRequestHandler {
     /** Injected after construction so the dashboard can list live sessions and auth history. */
     public void setSessions(SessionManager sessions) {
         this.sessions = sessions;
+    }
+
+    /** Injected after construction so the proximity tab can read and write its settings. */
+    public void setLocalChat(LocalChatService localChat, Path localChatPath) {
+        this.localChat = localChat;
+        this.localChatPath = localChatPath;
     }
 
     /** Live permission level of a connected player: 4 for operators, otherwise 0. */
@@ -135,6 +145,8 @@ public final class RemoteRequestHandler {
                 case AUTH_HISTORY -> authHistory(order);
                 case CREDENTIAL_ROTATE -> credentialRotate(order, staffName);
                 case OP_GRANT_OWNER -> grantOwnerOp(order, staffUuid, staffName);
+                case LOCAL_CHAT_STATUS -> localChatStatus(order);
+                case UPDATE_LOCAL_CHAT -> updateLocalChat(order);
             };
         } catch (IllegalArgumentException e) {
             return new OrderResultMessage(order.requestId(), false, e.getMessage());
@@ -519,6 +531,111 @@ public final class RemoteRequestHandler {
 
     private OrderResultMessage bridgeStatus(OrderMessage order) {
         return success(order, "ok", chatBridge.statusJson());
+    }
+
+    private OrderResultMessage localChatStatus(OrderMessage order) {
+        if (localChat == null) {
+            return failure(order, "proximity chat is not available");
+        }
+        return success(order, "ok", localChat.statusJson());
+    }
+
+    /**
+     * Applies a proximity setting and writes it to the dedicated file.
+     *
+     * <p>The value is parsed strictly: a boolean key accepts only a recognised flag, a numeric key
+     * only a number in range, and the format keys are bounded in length. Anything else is rejected
+     * rather than silently coerced, so the dashboard cannot put the settings into a state the
+     * config loader would later "correct" behind the operator's back.
+     */
+    private OrderResultMessage updateLocalChat(OrderMessage order) {
+        if (localChat == null) {
+            return failure(order, "proximity chat is not available");
+        }
+        String key = order.argument(0).toLowerCase(Locale.ROOT);
+        String value = order.argument(1);
+        try {
+            if (!applyLocalChatSetting(key, value)) {
+                return failure(order, "unknown or invalid setting: " + key);
+            }
+        } catch (NumberFormatException e) {
+            return failure(order, "the value for " + key + " must be a number");
+        }
+        // The dedicated file is authoritative, so persist there. admin-mod.json keeps its section
+        // for compatibility and is written as well, so a manual read of either file agrees.
+        try {
+            if (localChatPath != null) {
+                LocalChatFile.save(localChatPath, config.localChat);
+            }
+            ConfigLoader.save(configPath, config);
+        } catch (IOException e) {
+            return failure(order, "the proximity settings could not be written");
+        }
+        localChat.reload();
+        return success(order, "updated " + key, localChat.statusJson());
+    }
+
+    private boolean applyLocalChatSetting(String key, String value) {
+        AdminConfig.LocalChat local = config.localChat;
+        boolean flag = value.equalsIgnoreCase("true") || value.equalsIgnoreCase("on") || value.equals("1");
+        switch (key) {
+            case "localchat.enabled" -> local.enabled = flag;
+            case "localchat.radius" -> {
+                double radius = Double.parseDouble(value);
+                if (radius <= 0 || radius > 30_000_000) {
+                    return false;
+                }
+                local.radius = radius;
+            }
+            case "localchat.globalprefix" -> {
+                if (value.length() > 8) {
+                    return false;
+                }
+                local.globalPrefix = value;
+            }
+            case "localchat.locformat", "localchat.localformat" -> {
+                if (value.isBlank() || value.length() > 256) {
+                    return false;
+                }
+                local.localFormat = value;
+            }
+            case "localchat.globalformat" -> {
+                if (value.isBlank() || value.length() > 256) {
+                    return false;
+                }
+                local.globalFormat = value;
+            }
+            case "localchat.globalreachesalldimensions" -> local.globalReachesAllDimensions = flag;
+            case "localchat.staffbypass" -> local.staffBypass = flag;
+            case "localchat.stafflevel" -> {
+                int level = Integer.parseInt(value);
+                if (level < 0 || level > 4) {
+                    return false;
+                }
+                local.staffLevel = level;
+            }
+            case "localchat.soundenabled" -> local.soundEnabled = flag;
+            case "localchat.soundid" -> {
+                if (value.isBlank() || value.length() > 128) {
+                    return false;
+                }
+                local.soundId = value;
+            }
+            case "localchat.cooldownmillis" -> {
+                long cooldown = Long.parseLong(value);
+                if (cooldown < 0 || cooldown > 600_000L) {
+                    return false;
+                }
+                local.cooldownMillis = cooldown;
+            }
+            case "localchat.showrecipientcount" -> local.showRecipientCount = flag;
+            case "localchat.filtermessages" -> local.filterMessages = flag;
+            case "localchat.forwardtobridge" -> local.forwardToBridge = flag;
+            default -> {
+                return false;
+            }
+        }
+        return true;
     }
 
     private OrderResultMessage serverSettings(OrderMessage order) {

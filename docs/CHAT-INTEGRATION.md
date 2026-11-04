@@ -14,8 +14,15 @@ Minecraft code, so they can be tested on a plain JVM.
 ## Outbound path
 
 ```
+ServerMessageEvents.ALLOW_CHAT_MESSAGE
+        │  (server tick thread, inside PlayerManager.broadcast)
+        ▼
+LocalChatService.dispatch       proximity routing, when the feature is on for the sender's dimension
+        │  returns false to take the message over, so vanilla does not also deliver it
+        │  forwards it to the bridge itself with its channel tag
+        ▼
 ServerMessageEvents.CHAT_MESSAGE
-        │  (server tick thread)
+        │  (server tick thread) — ordinary public chat that was not taken over
         ▼
 ChatFilter.shouldForward        policy: public chat only, no commands, no private messages
         │
@@ -55,6 +62,11 @@ Only public player chat is forwarded by default. Private messages (`/msg`, `/tel
 execution are never forwarded unless explicitly enabled, and enabling them is not recommended.
 Command output and remote-console output are suppressed too: the server echoes a command's result
 to chat, and that echo is recognised and dropped.
+
+When proximity chat is enabled, a local or global message is forwarded with its channel tag:
+`%channel%` is `LOCAL` or `GLOBAL` and `%channel_label%` is `Local` or `Global`, so a format can
+render `[Local] Alex: hi` or branch on the channel. Ordinary public chat carries an empty label.
+`localChat.forwardToBridge` turns proximity forwarding off without affecting ordinary chat.
 
 ## Inbound path
 
@@ -121,8 +133,9 @@ access token travels in the `Authorization: Bearer` header and never in the quer
 ## Generic webhook specifics
 
 Any HTTP endpoint can receive chat. The request body is built from `payloadTemplate`, in which
-`%player%`, `%message%`, `%timestamp%` and `%server%` are substituted and JSON-escaped. Extra
-headers come from `headers`, and one authentication header comes from `authHeader`/`authToken`.
+`%player%`, `%message%`, `%timestamp%`, `%server%`, `%channel%` and `%channel_label%` are
+substituted and JSON-escaped. Extra headers come from `headers`, and one authentication header
+comes from `authHeader`/`authToken`.
 
 ## Secrets
 
