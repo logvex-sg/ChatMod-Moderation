@@ -42,6 +42,36 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void aMigrationIsWrittenBackSoTheNextLoadIsCurrent(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("admin-mod.json");
+        Files.writeString(file, """
+                {
+                  "chatBridge": { "enabled": true }
+                }
+                """);
+
+        ConfigLoader.load(file);
+
+        // The upgraded file now declares the current version and carries the sections the old file
+        // was missing, so a second load has nothing left to migrate.
+        ConfigLoader.ValidationReport second = new ConfigLoader.ValidationReport();
+        AdminConfig reloaded = ConfigLoader.load(file, second);
+        assertEquals(ConfigLoader.CURRENT_VERSION, reloaded.configVersion);
+        assertTrue(second.notes().isEmpty(), "nothing should need migrating a second time: " + second.notes());
+    }
+
+    @Test
+    void aMalformedFileIsNotRewrittenAsAFreshDefault(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("admin-mod.json");
+        Files.writeString(file, "{ this is not json ");
+
+        ConfigLoader.load(file);
+
+        // The defaults are only in memory; the broken file was set aside and no replacement written.
+        assertFalse(Files.exists(file), "a broken file should not be replaced by defaults on disk");
+    }
+
+    @Test
     void aMalformedFileFallsBackToDefaultsAndKeepsTheBrokenCopy(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("admin-mod.json");
         Files.writeString(file, "{ this is not json ");

@@ -79,6 +79,17 @@ public final class ConfigLoader {
         config.configVersion = declaredVersion;
         migrate(config, report);
         validate(config, report);
+        // A file written by an older build is upgraded on disk as well, so the operator sees the
+        // current schema and the next boot does not repeat the migration. A malformed file is left
+        // alone here: it was already set aside and its defaults are only in memory.
+        if (declaredVersion < CURRENT_VERSION) {
+            try {
+                save(file, config);
+                report.add("wrote the migrated configuration back to " + file.getFileName());
+            } catch (IOException e) {
+                report.add("the migrated configuration could not be written back (" + e.getMessage() + ")");
+            }
+        }
         return config;
     }
 
