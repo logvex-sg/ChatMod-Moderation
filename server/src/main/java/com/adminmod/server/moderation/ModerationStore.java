@@ -173,6 +173,20 @@ public final class ModerationStore {
                 .count();
     }
 
+    /**
+     * Counts active warnings created at or after {@code sinceMillis}.
+     *
+     * <p>Used by the escalation rule, which only considers warnings inside a rolling window. A
+     * {@code sinceMillis} of zero counts every active warning.
+     */
+    public synchronized int countWarningsSince(UUID targetUuid, long sinceMillis) {
+        return (int) punishments.stream()
+                .filter(p -> p.active() && p.type() == PunishmentType.WARNING
+                        && p.targetUuid().equals(targetUuid.toString())
+                        && (sinceMillis <= 0L || p.createdAt() >= sinceMillis))
+                .count();
+    }
+
     public synchronized List<Punishment> history(UUID targetUuid) {
         List<Punishment> result = new ArrayList<>();
         for (Punishment punishment : punishments) {

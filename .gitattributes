@@ -1,0 +1,17 @@
+# Batch files must keep Windows line endings or cmd.exe mis-parses them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell scripts keep LF.
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Source and resources are normalised.
+*.java text eol=lf
+*.gradle text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Binaries.
+*.jar binary
+*.png binary

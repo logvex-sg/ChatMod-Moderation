@@ -36,11 +36,18 @@ public final class GenericWebhookProvider implements ChatProvider {
     private final String authToken;
     private final Map<String, String> headers;
     private final String contentType;
+    private final int maxMessageLength;
 
     private volatile String lastError = "";
 
     public GenericWebhookProvider(HttpTransport transport, String url, String method, String payloadTemplate,
             String authHeader, String authToken, Map<String, String> headers, String contentType) {
+        this(transport, url, method, payloadTemplate, authHeader, authToken, headers, contentType, 1500);
+    }
+
+    public GenericWebhookProvider(HttpTransport transport, String url, String method, String payloadTemplate,
+            String authHeader, String authToken, Map<String, String> headers, String contentType,
+            int maxMessageLength) {
         this.transport = transport;
         this.url = url == null ? "" : url.trim();
         this.method = method == null || method.isBlank() ? "POST" : method.trim().toUpperCase(Locale.ROOT);
@@ -51,6 +58,7 @@ public final class GenericWebhookProvider implements ChatProvider {
         this.authToken = authToken == null ? "" : authToken.trim();
         this.headers = headers == null ? Map.of() : Map.copyOf(headers);
         this.contentType = contentType == null || contentType.isBlank() ? "application/json" : contentType;
+        this.maxMessageLength = Math.max(64, maxMessageLength);
     }
 
     @Override
@@ -105,14 +113,15 @@ public final class GenericWebhookProvider implements ChatProvider {
 
     /** Renders the configured template for the event. Visible for testing. */
     public String render(ChatEvent event) {
+        String message = com.adminmod.integrations.text.TextSanitizer.clean(event.message(), maxMessageLength);
         Map<String, String> values = new HashMap<>();
         values.put("player", Template.escapeJson(event.playerName()));
         values.put("uuid", Template.escapeJson(event.playerUuid()));
-        values.put("message", Template.escapeJson(event.message()));
+        values.put("message", Template.escapeJson(message));
         values.put("timestamp", Template.escapeJson(ISO.format(Instant.ofEpochMilli(event.timestampMillis()).atZone(ZoneId.systemDefault()))));
         values.put("server", Template.escapeJson(event.serverName()));
         values.put("raw_player", event.playerName());
-        values.put("raw_message", event.message());
+        values.put("raw_message", message);
         return Template.render(payloadTemplate, values);
     }
 

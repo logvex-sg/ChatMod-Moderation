@@ -98,4 +98,75 @@ class ChatBridgeServiceTest {
         assertEquals("[Discord] Alex: hello", shown.get(0).message());
         bridge.close();
     }
+
+    /** Waits until the dispatcher worker has had a chance to attempt at least one delivery. */
+    private static void awaitDelivery(CountingTransport transport) {
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (transport.uris.isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+    }
+
+    @Test
+    void aRepeatedMessageIsDroppedByTheAntiSpamGuard() {
+        AdminConfig config = config();
+        config.chatBridge.antiSpam.duplicateWindowSeconds = 60L;
+        config.chatBridge.antiSpam.maxDuplicates = 1;
+        config.chatBridge.antiSpam.minIntervalMillis = 0L;
+        CountingTransport transport = new CountingTransport();
+        ChatBridgeService bridge = new ChatBridgeService(config, "Server", transport);
+
+        bridge.onPublicChat("Alex", "uuid", "buy my stuff");
+        awaitDelivery(transport);
+        assertEquals(1, transport.uris.size(), "the first copy is forwarded");
+
+        // The same body from the same player is over the duplicate cap, so it is dropped before
+        // it ever reaches the queue.
+        bridge.onPublicChat("Alex", "uuid", "buy my stuff");
+        bridge.onPublicChat("Alex", "uuid", "buy my stuff");
+        try {
+            Thread.sleep(300L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        assertEquals(1, transport.uris.size(), "the repeats must not be forwarded");
+        bridge.close();
+    }
+
+    @Test
+    void antiSpamIsPerPlayer() {
+        AdminConfig config = config();
+        config.chatBridge.antiSpam.duplicateWindowSeconds = 60L;
+        config.chatBridge.antiSpam.maxDuplicates = 1;
+        config.chatBridge.antiSpam.minIntervalMillis = 0L;
+        CountingTransport transport = new CountingTransport();
+        ChatBridgeService bridge = new ChatBridgeService(config, "Server", transport);
+
+        bridge.onPublicChat("Alex", "uuid-a", "hello");
+        bridge.onPublicChat("Steve", "uuid-b", "hello");
+        long deadline = System.currentTimeMillis() + 3_000L;
+        while (transport.uris.size() < 2 && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertEquals(2, transport.uris.size(), "a different player's identical line is not spam");
+        bridge.close();
+    }
+
+    @Test
+    void aReloadRebuildsTheDispatcherWithoutLeakingIt() {
+        AdminConfig config = config();
+        CountingTransport transport = new CountingTransport();
+        ChatBridgeService bridge = new ChatBridgeService(config, "Server", transport);
+        long deliveredBefore = bridge.dispatcher().deliveredCount();
+
+        int readers = bridge.reload();
+
+        assertEquals(0, readers, "inbound is disabled, so no readers should start");
+        assertEquals(deliveredBefore, bridge.dispatcher().deliveredCount(), "counters start fresh");
+        // The rebuilt dispatcher still works: a message is delivered after the reload.
+        bridge.onPublicChat("Alex", "uuid", "after reload");
+        awaitDelivery(transport);
+        assertEquals(1, transport.uris.size());
+        bridge.close();
+    }
 }

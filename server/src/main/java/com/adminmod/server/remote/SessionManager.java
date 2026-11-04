@@ -13,6 +13,7 @@ import com.adminmod.common.net.HandshakeResultMessage;
 import com.adminmod.common.net.Message;
 import com.adminmod.common.net.OrderMessage;
 import com.adminmod.common.net.OrderResultMessage;
+import com.adminmod.common.net.OrderType;
 import com.adminmod.common.security.SessionException;
 import com.adminmod.server.auth.CredentialService;
 import com.adminmod.server.auth.PermissionService;
@@ -67,6 +68,36 @@ public final class SessionManager {
         }
     }
 
+    /** Closes every session. Called on server shutdown so no state outlives the world. */
+    public void closeAll() {
+        for (RemoteSession session : sessions.values()) {
+            session.close();
+        }
+        sessions.clear();
+    }
+
+    /**
+     * Drops sessions that have been idle for longer than the configured lifetime.
+     *
+     * <p>A forgotten client keeps a decrypted key alive for as long as the player stays connected;
+     * expiring idle sessions bounds how long a leaked key remains usable. Called from the server
+     * tick, so it only walks the (small) session map.
+     */
+    public int expireIdle(long now) {
+        long lifetime = Math.max(1, config.remoteAdmin.sessionTimeoutSeconds) * 1000L;
+        int expired = 0;
+        for (Map.Entry<UUID, RemoteSession> entry : sessions.entrySet()) {
+            RemoteSession session = entry.getValue();
+            if (session.isAuthenticated() && now - session.lastActivityMillis() > lifetime) {
+                if (sessions.remove(entry.getKey(), session)) {
+                    session.close();
+                    expired++;
+                }
+            }
+        }
+        return expired;
+    }
+
     public int authenticatedSessions() {
         int count = 0;
         for (RemoteSession session : sessions.values()) {
@@ -109,7 +140,7 @@ public final class SessionManager {
 
         byte[] plaintext;
         try {
-            plaintext = session.open(envelope.body(), envelope.nonce(), envelope.timestamp(), false);
+            plaintext = session.open(envelope.body(), envelope.nonce(), envelope.timestamp());
         } catch (SessionException e) {
             sessions.remove(player.getUuid());
             session.close();
@@ -126,8 +157,15 @@ public final class SessionManager {
             return null;
         }
 
+        // Console commands are the expensive orders, so they are charged against the stricter
+        // console budget as well as the general one already consumed by open().
+        if (order.orderType() == OrderType.EXECUTE_COMMAND && !session.acquireConsole()) {
+            return seal(session, new OrderResultMessage(order.requestId(), false, "console rate limit exceeded"));
+        }
+
         // The key is proven by the successful decryption above.
         session.markAuthenticated();
+        session.touch();
 
         int level = handler.permissionLevelOf(player);
         boolean owner = permissions.isOwner(player.getUuid());

@@ -20,6 +20,12 @@ ServerMessageEvents.CHAT_MESSAGE
 ChatFilter.shouldForward        policy: public chat only, no commands, no private messages
         │
         ▼
+TextSanitizer.clean             strip colour codes and control characters, then truncate
+        │
+        ▼
+AntiSpamGuard.accept            per-player minimum gap and duplicate cap
+        │
+        ▼
 ChatDispatcher.enqueue          bounded queue, oldest dropped when full
         │  (returns immediately — the tick thread never does network I/O)
         ▼
@@ -34,11 +40,14 @@ ChatProvider.send               Discord / Matrix / generic webhook
 
 Design points:
 
-- The tick thread only runs a policy check and an enqueue. It never opens a socket.
+- The tick thread only runs a policy check, a sanitisation pass and an enqueue. It never opens a
+  socket.
 - The queue is bounded. When it is full the oldest entry is dropped, so a slow or unreachable
   platform cannot grow memory without limit or stall the server.
 - Retries use exponential backoff up to `chatBridge.maxAttempts`, after which the message is
   recorded as failed and surfaced on the dashboard.
+- The anti-spam guard is keyed per player, so one player holding down a macro cannot burn the
+  webhook rate limit for everybody else. A message that is dropped as spam is never queued.
 
 ### What is forwarded, and what is not
 

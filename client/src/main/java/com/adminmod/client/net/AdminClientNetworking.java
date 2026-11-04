@@ -139,7 +139,10 @@ public final class AdminClientNetworking {
         this.lastError = "";
         this.lastStatus = -1;
         this.cipher = null;
+        wipe(this.passwordKey);
         this.passwordKey = Kdf.derivePasswordKey(password);
+        // The caller's array is not needed once the key is derived; clear it in place.
+        java.util.Arrays.fill(password, '\0');
 
         HandshakeMessage handshake = new HandshakeMessage(AdminProtocol.PROTOCOL_VERSION, "1.0.0", nonce);
         ClientPlayNetworking.send(new AdminPayload(
@@ -239,10 +242,18 @@ public final class AdminClientNetworking {
     private void reset() {
         state = State.DISCONNECTED;
         cipher = null;
+        wipe(passwordKey);
         passwordKey = null;
         clientNonce = null;
         revealedCredential = "";
         pending.clear();
+    }
+
+    /** Overwrites a key in memory once it is no longer needed. */
+    private static void wipe(byte[] key) {
+        if (key != null) {
+            java.util.Arrays.fill(key, (byte) 0);
+        }
     }
 
     /** Drops the session, for example when the connection to the server ends. */

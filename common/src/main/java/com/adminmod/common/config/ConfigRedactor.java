@@ -27,6 +27,11 @@ public final class ConfigRedactor {
         view.queueCapacity = config.chatBridge.queueCapacity;
         view.maxAttempts = config.chatBridge.maxAttempts;
         view.requestTimeoutMillis = config.chatBridge.requestTimeoutMillis;
+        view.maxMessageLength = config.chatBridge.maxMessageLength;
+        view.blockedKeywordCount = config.chatBridge.blockedKeywords.size();
+        view.extraDiscordChannels = config.chatBridge.extraDiscordChannels.size();
+        view.extraMatrixRooms = config.chatBridge.extraMatrixRooms.size();
+        view.antiSpamEnabled = config.chatBridge.antiSpam.enabled;
 
         view.discordWebhookConfigured = isSet(config.chatBridge.discord.webhookUrl);
         view.discordUsername = config.chatBridge.discord.username;
@@ -44,6 +49,10 @@ public final class ConfigRedactor {
         view.moderationEnabled = config.moderation.enabled;
         view.requireReasons = config.moderation.requireReasons;
         view.broadcastPunishments = config.moderation.broadcastPunishments;
+        view.notifyStaff = config.moderation.notifyStaff;
+        view.escalationEnabled = config.moderation.escalation.enabled;
+        view.escalationWarnThreshold = config.moderation.escalation.warnThreshold;
+        view.punishmentTemplateCount = config.moderation.templates.size();
 
         view.inboundEnabled = config.chatBridge.inbound.enabled;
         view.inboundFormat = config.chatBridge.inbound.format;
@@ -62,6 +71,14 @@ public final class ConfigRedactor {
         view.requestsPerMinute = config.remoteAdmin.requestsPerMinute;
         view.allowRemoteConsole = config.remoteAdmin.allowRemoteConsole;
         view.allowOpManagement = config.remoteAdmin.allowOpManagement;
+        view.sessionTimeoutSeconds = config.remoteAdmin.sessionTimeoutSeconds;
+        view.blockedCommands = new ArrayList<>(config.remoteAdmin.blockedCommands);
+
+        view.maintenanceEnabled = config.maintenance.enabled;
+        view.maintenanceMessage = config.maintenance.message;
+        view.announcementsEnabled = config.announcements.enabled;
+        view.announcementCount = config.announcements.messages.size();
+        view.logLevel = config.logging.level;
 
         view.viewLevel = config.permissions.viewLevel;
         view.moderateLevel = config.permissions.moderateLevel;
@@ -85,6 +102,11 @@ public final class ConfigRedactor {
         public int queueCapacity;
         public int maxAttempts;
         public int requestTimeoutMillis;
+        public int maxMessageLength;
+        public int blockedKeywordCount;
+        public int extraDiscordChannels;
+        public int extraMatrixRooms;
+        public boolean antiSpamEnabled;
 
         public boolean discordWebhookConfigured;
         public String discordUsername = "";
@@ -102,6 +124,10 @@ public final class ConfigRedactor {
         public boolean moderationEnabled;
         public boolean requireReasons;
         public boolean broadcastPunishments;
+        public boolean notifyStaff;
+        public boolean escalationEnabled;
+        public int escalationWarnThreshold;
+        public int punishmentTemplateCount;
 
         public boolean inboundEnabled;
         public String inboundFormat = "";
@@ -120,6 +146,14 @@ public final class ConfigRedactor {
         public int requestsPerMinute;
         public boolean allowRemoteConsole;
         public boolean allowOpManagement;
+        public long sessionTimeoutSeconds;
+        public List<String> blockedCommands = new ArrayList<>();
+
+        public boolean maintenanceEnabled;
+        public String maintenanceMessage = "";
+        public boolean announcementsEnabled;
+        public int announcementCount;
+        public String logLevel = "";
 
         public int viewLevel;
         public int moderateLevel;

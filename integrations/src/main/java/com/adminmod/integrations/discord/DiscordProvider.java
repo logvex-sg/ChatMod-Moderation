@@ -39,11 +39,17 @@ public final class DiscordProvider implements ChatProvider {
     private final boolean useEmbeds;
     private final String messageFormat;
     private final int embedColor;
+    private final int maxMessageLength;
 
     private volatile String lastError = "";
 
     public DiscordProvider(HttpTransport transport, String webhookUrl, String username, String avatarUrl,
             boolean useEmbeds, String messageFormat, int embedColor) {
+        this(transport, webhookUrl, username, avatarUrl, useEmbeds, messageFormat, embedColor, 1500);
+    }
+
+    public DiscordProvider(HttpTransport transport, String webhookUrl, String username, String avatarUrl,
+            boolean useEmbeds, String messageFormat, int embedColor, int maxMessageLength) {
         this.transport = transport;
         this.webhookUrl = webhookUrl == null ? "" : webhookUrl.trim();
         this.username = username == null || username.isBlank() ? "Minecraft Server" : username;
@@ -53,6 +59,7 @@ public final class DiscordProvider implements ChatProvider {
                 ? "**%player%**: %message%"
                 : messageFormat;
         this.embedColor = embedColor;
+        this.maxMessageLength = Math.max(64, maxMessageLength);
     }
 
     @Override
@@ -109,7 +116,7 @@ public final class DiscordProvider implements ChatProvider {
 
         if (useEmbeds) {
             JsonObject embed = new JsonObject();
-            embed.addProperty("description", truncate(rendered, 4000));
+            embed.addProperty("description", truncate(rendered, Math.min(maxMessageLength, 4000)));
             embed.addProperty("color", embedColor);
             JsonObject footer = new JsonObject();
             footer.addProperty("text", event.serverName());
@@ -118,7 +125,7 @@ public final class DiscordProvider implements ChatProvider {
             embeds.add(embed);
             payload.add("embeds", embeds);
         } else {
-            payload.addProperty("content", truncate(rendered, 1900));
+            payload.addProperty("content", truncate(rendered, Math.min(maxMessageLength, 1900)));
         }
 
         // Pin mentions to nothing: forwarded chat must never ping a channel or a role.

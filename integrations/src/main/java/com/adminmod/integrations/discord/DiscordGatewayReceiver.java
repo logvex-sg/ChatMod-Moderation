@@ -62,6 +62,8 @@ public final class DiscordGatewayReceiver implements InboundReceiver {
     private final String label;
     private final InboundChatBridge bridge;
     private final HttpClient httpClient;
+    private final java.util.Set<String> acceptedChannels;
+    private final boolean anyChannel;
 
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicLong sequence = new AtomicLong(-1L);
@@ -81,6 +83,8 @@ public final class DiscordGatewayReceiver implements InboundReceiver {
         this.config = config;
         this.label = label == null || label.isBlank() ? "Discord" : label;
         this.bridge = bridge;
+        this.acceptedChannels = buildAcceptedChannels(config);
+        this.anyChannel = acceptedChannels.isEmpty();
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
     }
 
@@ -281,7 +285,7 @@ public final class DiscordGatewayReceiver implements InboundReceiver {
     boolean channelAccepted(JsonObject data) {
         String channel = data.has("channel_id") && !data.get("channel_id").isJsonNull()
                 ? data.get("channel_id").getAsString() : "";
-        if (!config.channelId.isBlank() && !config.channelId.equals(channel)) {
+        if (!anyChannel && !acceptedChannels.contains(channel)) {
             return false;
         }
         if (!config.guildId.isBlank()) {
@@ -292,6 +296,28 @@ public final class DiscordGatewayReceiver implements InboundReceiver {
             }
         }
         return true;
+    }
+
+    /**
+     * Builds the accepted channel set once, at construction.
+     *
+     * <p>When no channel is configured the reader accepts every channel the bot can see. Otherwise
+     * the primary channel plus every entry in {@code extraChannelIds} is accepted, so one bot can
+     * bridge several channels at once. Precomputing avoids allocating a set per message.
+     */
+    private static java.util.Set<String> buildAcceptedChannels(AdminConfig.DiscordInbound config) {
+        java.util.Set<String> channels = new java.util.HashSet<>();
+        if (config.channelId != null && !config.channelId.isBlank()) {
+            channels.add(config.channelId);
+        }
+        if (config.extraChannelIds != null) {
+            for (String extra : config.extraChannelIds) {
+                if (extra != null && !extra.isBlank()) {
+                    channels.add(extra);
+                }
+            }
+        }
+        return channels;
     }
 
     private static String displayName(JsonObject author) {

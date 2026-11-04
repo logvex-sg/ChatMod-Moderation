@@ -25,6 +25,8 @@ import net.minecraft.client.gui.DrawContext;
  */
 public final class ChatBridgeTab extends DashboardTab {
 
+    private static final long REFRESH_INTERVAL_MILLIS = 3_000L;
+
     private record Integration(String id, boolean active, boolean configured, String destination) {
     }
 
@@ -38,7 +40,9 @@ public final class ChatBridgeTab extends DashboardTab {
     private boolean publicChatOnly;
     private boolean forwardCommands;
     private boolean forwardPrivateMessages;
+    private boolean forwardJoinLeave;
     private boolean inboundEnabled;
+    private boolean antiSpamEnabled;
     private long inboundReceived;
     private long inboundDisplayed;
     private long inboundDropped;
@@ -48,6 +52,7 @@ public final class ChatBridgeTab extends DashboardTab {
     private int delivered;
     private int failed;
     private int dropped;
+    private long lastRefresh;
     private String status = "Refresh to load the bridge status";
 
     public ChatBridgeTab(AdminDashboardScreen screen) {
@@ -70,7 +75,9 @@ public final class ChatBridgeTab extends DashboardTab {
         screen.addWidget(FlatButton.secondary(x + 126, y + height - 30, 160, 20, "Toggle bridge",
                 button -> toggle("chatbridge.enabled", !enabled)));
         screen.addWidget(FlatButton.secondary(x + 292, y + height - 30, 200, 20, "Toggle join/leave messages",
-                button -> toggle("chatbridge.forwardjoinleave", false)));
+                button -> toggle("chatbridge.forwardjoinleave", !forwardJoinLeave)));
+        screen.addWidget(FlatButton.secondary(x + 498, y + height - 30, 160, 20, "Toggle anti-spam",
+                button -> toggle("chatbridge.antispam", !antiSpamEnabled)));
     }
 
     @Override
@@ -80,12 +87,14 @@ public final class ChatBridgeTab extends DashboardTab {
 
     @Override
     public void tick() {
-        if (AdminClientNetworking.get().isReady()) {
+        if (AdminClientNetworking.get().isReady()
+                && System.currentTimeMillis() - lastRefresh > REFRESH_INTERVAL_MILLIS) {
             refresh();
         }
     }
 
     private void refresh() {
+        lastRefresh = System.currentTimeMillis();
         AdminClientNetworking.get().send(OrderType.BRIDGE_STATUS, this::onStatus);
     }
 
@@ -112,6 +121,8 @@ public final class ChatBridgeTab extends DashboardTab {
         publicChatOnly = Json.bool(root, "publicChatOnly", true);
         forwardCommands = Json.bool(root, "forwardCommands", false);
         forwardPrivateMessages = Json.bool(root, "forwardPrivateMessages", false);
+        forwardJoinLeave = Json.bool(root, "forwardJoinLeave", true);
+        antiSpamEnabled = Json.bool(root, "antiSpamEnabled", true);
         queued = Json.integer(root, "queued", 0);
         delivered = Json.integer(root, "delivered", 0);
         failed = Json.integer(root, "failed", 0);

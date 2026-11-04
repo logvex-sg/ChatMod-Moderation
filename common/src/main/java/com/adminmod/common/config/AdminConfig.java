@@ -8,13 +8,23 @@ import java.util.Map;
  *
  * <p>Only the server reads this file. The remote administration protocol exposes a redacted
  * view of it and never transmits the credentials held here.
+ *
+ * <p>{@link #configVersion} records the schema the file was written with. {@link ConfigLoader}
+ * upgrades an older file in place, so a server that is updated does not lose its settings and
+ * does not have to be reconfigured by hand.
  */
 public final class AdminConfig {
+
+    /** Schema version written into the file. Bumped whenever the layout changes. */
+    public int configVersion = ConfigLoader.CURRENT_VERSION;
 
     public ChatBridge chatBridge = new ChatBridge();
     public Moderation moderation = new Moderation();
     public RemoteAdmin remoteAdmin = new RemoteAdmin();
     public Permissions permissions = new Permissions();
+    public Announcements announcements = new Announcements();
+    public Maintenance maintenance = new Maintenance();
+    public Logging logging = new Logging();
 
     public static final class ChatBridge {
         public boolean enabled = true;
@@ -26,14 +36,57 @@ public final class AdminConfig {
         public int queueCapacity = 512;
         public int maxAttempts = 5;
         public int requestTimeoutMillis = 8000;
+        /** Hard cap on a forwarded message, after formatting. Longer messages are truncated. */
+        public int maxMessageLength = 1500;
+        /** Removes Minecraft colour/formatting codes before the message leaves the server. */
+        public boolean stripFormatting = true;
+        /**
+         * Substrings that block forwarding. Matching is case-insensitive and a match drops the
+         * message from the bridge entirely; it is a filter, not a punishment.
+         */
+        public List<String> blockedKeywords = List.of();
         public Discord discord = new Discord();
         public Matrix matrix = new Matrix();
         public GenericWebhook generic = new GenericWebhook();
+        /**
+         * Additional Discord webhooks. When non-empty these are used <em>in addition to</em>
+         * {@link Discord#webhookUrl}, so a server can mirror chat into several channels.
+         */
+        public List<DiscordChannel> extraDiscordChannels = List.of();
+        /** Additional Matrix room ids, delivered with the homeserver and token from {@link Matrix}. */
+        public List<String> extraMatrixRooms = List.of();
+        public AntiSpam antiSpam = new AntiSpam();
         /**
          * Inbound direction: platform messages shown in Minecraft chat. Off by default, so an
          * upgraded server keeps forwarding outbound chat exactly as before.
          */
         public Inbound inbound = new Inbound();
+    }
+
+    /** One extra Discord destination, sharing the shape of the primary webhook settings. */
+    public static final class DiscordChannel {
+        public String webhookUrl = "";
+        public String username = "Minecraft Server";
+        public String avatarUrl = "";
+        public boolean useEmbeds = true;
+        public String messageFormat = "**%player%**: %message%";
+        public int embedColor = 0x5865F2;
+    }
+
+    /**
+     * Anti-spam guard for the outbound bridge.
+     *
+     * <p>It exists so a player holding down a macro cannot flood the external channel or burn the
+     * webhook rate limit for everybody else. Blocked messages are dropped, never queued.
+     */
+    public static final class AntiSpam {
+        public boolean enabled = true;
+        /** An identical (player, message) pair inside this window counts as a repeat. */
+        public long duplicateWindowSeconds = 8L;
+        /** Repeats allowed inside the window before further copies are dropped. */
+        public int maxDuplicates = 2;
+        /** Minimum gap between two forwarded messages from the same player, in milliseconds. */
+        public long minIntervalMillis = 250L;
     }
 
     /**
@@ -70,6 +123,8 @@ public final class AdminConfig {
         public String botToken = "";
         /** Channel to read from. Empty means every text channel the bot can see. */
         public String channelId = "";
+        /** Additional channels to accept, so one bot can bridge several channels at once. */
+        public List<String> extraChannelIds = List.of();
         /** Optional guild restriction. Empty means every guild the bot is a member of. */
         public String guildId = "";
         public String gatewayUrl = "wss://gateway.discord.gg/?v=10&encoding=json";
@@ -80,6 +135,8 @@ public final class AdminConfig {
         public boolean enabled = false;
         public String homeserver = "";
         public String roomId = "";
+        /** Additional rooms to read, sharing the homeserver and access token. */
+        public List<String> extraRoomIds = List.of();
         /** Access token. Treat as a secret; it is never sent to a client. */
         public String accessToken = "";
         /** The bot's own MXID, used to ignore its echo of outbound messages. */
@@ -127,6 +184,55 @@ public final class AdminConfig {
         public long defaultTempBanSeconds = 86_400L;
         public long defaultTempMuteSeconds = 3_600L;
         public long maxPunishmentSeconds = 31_536_000L;
+        /** Sends a private notice to online staff when an action is taken. */
+        public boolean notifyStaff = true;
+        /** Announces joins and leaves in chat, which the bridge can then forward. */
+        public boolean announceJoinLeave = false;
+        public Escalation escalation = new Escalation();
+        /**
+         * Named punishment templates. A template is a duration and a reason a moderator can apply
+         * by name, so common actions are consistent instead of hand-typed each time.
+         */
+        public List<PunishmentTemplate> templates = List.of(
+                PunishmentTemplate.of("mute-1h", "MUTE", 3_600L, "Disruptive behaviour"),
+                PunishmentTemplate.of("mute-1d", "MUTE", 86_400L, "Repeated disruptive behaviour"),
+                PunishmentTemplate.of("ban-1d", "BAN", 86_400L, "Serious rule violation"),
+                PunishmentTemplate.of("ban-perm", "BAN", 0L, "Permanent removal"));
+    }
+
+    /**
+     * Automatic escalation of warnings into mutes.
+     *
+     * <p>When a player accumulates {@code warnThreshold} active warnings inside
+     * {@code windowSeconds}, the configured mute is applied automatically. This is what turns a
+     * warning system into something that actually deters repeat behaviour.
+     */
+    public static final class Escalation {
+        public boolean enabled = false;
+        /** Number of active warnings that triggers the automatic punishment. */
+        public int warnThreshold = 3;
+        /** Warnings older than this do not count, in seconds. Zero means no time limit. */
+        public long windowSeconds = 604_800L;
+        /** Duration of the automatic mute, in seconds. Zero means permanent. */
+        public long muteSeconds = 86_400L;
+        public String reason = "Automatic mute: too many warnings";
+    }
+
+    /** A reusable punishment preset. */
+    public static final class PunishmentTemplate {
+        public String name = "";
+        public String type = "MUTE";
+        public long seconds = 3_600L;
+        public String reason = "";
+
+        public static PunishmentTemplate of(String name, String type, long seconds, String reason) {
+            PunishmentTemplate template = new PunishmentTemplate();
+            template.name = name;
+            template.type = type;
+            template.seconds = seconds;
+            template.reason = reason;
+            return template;
+        }
     }
 
     public static final class RemoteAdmin {
@@ -144,6 +250,13 @@ public final class AdminConfig {
          * intended channel, and an operator can always read it there.
          */
         public boolean revealPasswordToOperators = false;
+        /** An authenticated session is dropped after this much idle time, in seconds. */
+        public long sessionTimeoutSeconds = 900L;
+        /**
+         * Command names the remote console may not run. Matching is on the first word, so
+         * {@code stop} blocks {@code stop} and any argument it takes.
+         */
+        public List<String> blockedCommands = List.of("stop", "restart");
         /**
          * Relative to the server run directory. The default is the fixed folder the credentials
          * live in; the password file inside is readable only by the server process owner.
@@ -160,5 +273,30 @@ public final class AdminConfig {
         public int adminLevel = 4;
         /** Extra UUIDs granted moderation rights regardless of permission level. */
         public List<String> moderators = List.of();
+    }
+
+    /** Scheduled server announcements, delivered to chat and therefore to the bridge. */
+    public static final class Announcements {
+        public boolean enabled = false;
+        /** Interval between the rotating announcements, in seconds. */
+        public long intervalSeconds = 300L;
+        /** Announcement lines, shown one at a time in order. */
+        public List<String> messages = List.of();
+    }
+
+    /** Maintenance mode: a visible notice and an optional allow-list for who may join. */
+    public static final class Maintenance {
+        public boolean enabled = false;
+        public String message = "The server is under maintenance and will be back shortly.";
+        /** When true, players who are not operators are kicked on join. */
+        public boolean kickNonOperators = false;
+        /** UUIDs allowed to join during maintenance even when kicking is on. */
+        public List<String> allowList = List.of();
+    }
+
+    /** Diagnostics verbosity. */
+    public static final class Logging {
+        /** One of {@code off}, {@code error}, {@code warn}, {@code info}, {@code debug}. */
+        public String level = "info";
     }
 }

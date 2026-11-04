@@ -21,11 +21,13 @@ import com.adminmod.server.remote.SessionManager;
 
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.network.ServerPlayerEntity;
 
 /**
  * Server distribution entrypoint.
@@ -48,6 +50,7 @@ public final class AdminServerMod implements ModInitializer {
     private static ChatBridgeService chatBridge;
     private static SessionManager sessions;
     private static RemoteRequestHandler requestHandler;
+    private static ServerTicker ticker;
 
     @Override
     public void onInitialize() {
@@ -58,21 +61,55 @@ public final class AdminServerMod implements ModInitializer {
         ServerLifecycleEvents.SERVER_STARTING.register(this::onServerStarting);
         ServerLifecycleEvents.SERVER_STOPPING.register(this::onServerStopping);
 
+        // Registered here, during mod initialisation, so the command is present even though the
+        // callback fires while the server builds its dispatcher.
+        AdminCommand.register();
+
         ServerPlayNetworking.registerGlobalReceiver(AdminPayload.ID, (payload, context) -> {
             SessionManager active = sessions;
             if (active == null) {
                 return;
             }
-            byte[] response = active.handleFrame(context.player(), payload.data());
-            if (response != null) {
-                context.responseSender().sendPacket(new AdminPayload(response));
-            }
+            // This callback runs on a Netty I/O thread. Orders execute commands, mutate the player
+            // list and write files, none of which is safe off the main thread, so the whole request
+            // is scheduled onto the server thread. Decoding and decryption stay off-thread inside
+            // handleFrame, so a malformed or unauthenticated frame is still rejected without ever
+            // touching the server.
+            ServerPlayerEntity player = context.player();
+            byte[] data = payload.data();
+            MinecraftServer server = context.server();
+            server.execute(() -> {
+                byte[] response = active.handleFrame(player, data);
+                if (response == null) {
+                    return;
+                }
+                // The player may have left while the task was queued; sending to a disconnected
+                // player throws, and the answer is worthless by then anyway.
+                if (server.getPlayerManager().getPlayer(player.getUuid()) == null) {
+                    return;
+                }
+                ServerPlayNetworking.send(player, new AdminPayload(response));
+            });
         });
 
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             SessionManager active = sessions;
             if (active != null) {
                 active.close(handler.getPlayer().getUuid());
+            }
+        });
+
+        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+            ServerTicker active = ticker;
+            if (active != null) {
+                active.allowJoin(handler.getPlayer());
+            }
+        });
+
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            ServerTicker active = ticker;
+            if (active != null) {
+                active.tick(server);
             }
         });
 
@@ -135,8 +172,7 @@ public final class AdminServerMod implements ModInitializer {
         requestHandler = new RemoteRequestHandler(server, config, configPath, permissions, moderation, chatBridge,
                 credentials);
         sessions = new SessionManager(credentials, config, permissions, requestHandler, VERSION);
-
-        AdminCommand.register(server);
+        ticker = new ServerTicker(config, sessions);
 
         // Inbound readers are started only now: the sink broadcasts through the server, which
         // must be fully constructed before the first message can arrive.
@@ -151,6 +187,9 @@ public final class AdminServerMod implements ModInitializer {
         if (chatBridge != null) {
             chatBridge.close();
         }
+        if (sessions != null) {
+            sessions.closeAll();
+        }
         if (moderation != null) {
             try {
                 moderation.store().saveIfDirty();
@@ -163,10 +202,61 @@ public final class AdminServerMod implements ModInitializer {
         moderation = null;
         credentials = null;
         requestHandler = null;
+        ticker = null;
     }
 
     public static AdminConfig config() {
         return config;
+    }
+
+    /** Result of a live configuration reload, surfaced to the operator. */
+    public record ReloadOutcome(boolean success, String message) {
+    }
+
+    /**
+     * Re-reads the configuration file and applies it without a restart.
+     *
+     * <p>The existing {@link AdminConfig} instance is updated in place rather than replaced, so the
+     * subsystems that hold a reference to it (moderation, sessions, the ticker) observe the new
+     * values. The chat bridge is rebuilt because a provider change or a queue resize cannot be
+     * applied incrementally; its inbound readers are restarted so a reader that was enabled or
+     * disabled takes effect.
+     *
+     * @return whether the reload succeeded, with a short description for the operator
+     */
+    public static ReloadOutcome reloadConfiguration() {
+        if (configPath == null || config == null) {
+            return new ReloadOutcome(false, "the server is not running");
+        }
+        ConfigLoader.ValidationReport report = new ConfigLoader.ValidationReport();
+        AdminConfig fresh;
+        try {
+            fresh = ConfigLoader.load(configPath, report);
+        } catch (IOException e) {
+            return new ReloadOutcome(false, "the configuration could not be read");
+        }
+        copyInto(config, fresh);
+        if (chatBridge != null) {
+            chatBridge.reload();
+        }
+        if (ticker != null) {
+            ticker.resetAnnouncements();
+        }
+        String detail = report.isEmpty() ? "no corrections were needed"
+                : report.notes().size() + " correction(s) applied";
+        return new ReloadOutcome(true, detail);
+    }
+
+    /** Copies every top-level section of {@code source} onto {@code target}, keeping its identity. */
+    private static void copyInto(AdminConfig target, AdminConfig source) {
+        target.configVersion = source.configVersion;
+        target.chatBridge = source.chatBridge;
+        target.moderation = source.moderation;
+        target.remoteAdmin = source.remoteAdmin;
+        target.permissions = source.permissions;
+        target.announcements = source.announcements;
+        target.maintenance = source.maintenance;
+        target.logging = source.logging;
     }
 
     public static Path configPath() {

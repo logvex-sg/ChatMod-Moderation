@@ -111,4 +111,65 @@ class ModerationServiceTest {
         assertEquals(1, service.store().notes(TARGET).size());
         assertEquals("watch this player", service.store().notes(TARGET).get(0).text());
     }
+
+    private static ModerationService escalatingService(Path dir, int threshold) {
+        AdminConfig config = new AdminConfig();
+        config.moderation.escalation.enabled = true;
+        config.moderation.escalation.warnThreshold = threshold;
+        config.moderation.escalation.windowSeconds = 3_600L;
+        config.moderation.escalation.muteSeconds = 600L;
+        config.moderation.escalation.reason = "too many warnings";
+        return new ModerationService(new ModerationStore(dir.resolve("history.json")), config);
+    }
+
+    @Test
+    void escalationIsOffUntilTheThresholdIsReached(@TempDir Path dir) {
+        ModerationService service = escalatingService(dir, 3);
+        for (int i = 0; i < 2; i++) {
+            service.record(PunishmentType.WARNING, TARGET, "Alex", STAFF, "Admin", "warn " + i, 0L, "");
+            assertTrue(service.applyEscalation(TARGET, "Alex").isEmpty(), "no mute below the threshold");
+        }
+        assertFalse(service.isMuted(TARGET));
+
+        service.record(PunishmentType.WARNING, TARGET, "Alex", STAFF, "Admin", "warn 3", 0L, "");
+        ModerationService.Escalation fired = service.applyEscalation(TARGET, "Alex").orElseThrow();
+        assertEquals(3, fired.recentWarnings());
+        assertEquals("too many warnings", fired.punishment().reason());
+        assertTrue(service.isMuted(TARGET), "the third warning should trigger the automatic mute");
+    }
+
+    @Test
+    void escalationDoesNotFireWhenTheRuleIsDisabled(@TempDir Path dir) {
+        ModerationService service = service(dir);
+        for (int i = 0; i < 5; i++) {
+            service.record(PunishmentType.WARNING, TARGET, "Alex", STAFF, "Admin", "warn " + i, 0L, "");
+        }
+        assertTrue(service.applyEscalation(TARGET, "Alex").isEmpty());
+        assertFalse(service.isMuted(TARGET));
+    }
+
+    @Test
+    void anAlreadyMutedPlayerIsNotMutedTwice(@TempDir Path dir) {
+        ModerationService service = escalatingService(dir, 1);
+        service.record(PunishmentType.WARNING, TARGET, "Alex", STAFF, "Admin", "warn", 0L, "");
+        assertTrue(service.applyEscalation(TARGET, "Alex").isPresent());
+        assertTrue(service.applyEscalation(TARGET, "Alex").isEmpty(), "the second pass must be a no-op");
+    }
+
+    @Test
+    void warningsOutsideTheWindowDoNotEscalate(@TempDir Path dir) {
+        AdminConfig config = new AdminConfig();
+        config.moderation.escalation.enabled = true;
+        config.moderation.escalation.warnThreshold = 2;
+        config.moderation.escalation.windowSeconds = 1L;
+        ModerationService service = new ModerationService(new ModerationStore(dir.resolve("history.json")), config);
+
+        // Two warnings, but the window is one second, so by the time we ask they have aged out.
+        service.store().record(PunishmentType.WARNING, TARGET, "Alex", STAFF, "Admin", "old", 0L,
+                System.currentTimeMillis() - 60_000L, "");
+        service.store().record(PunishmentType.WARNING, TARGET, "Alex", STAFF, "Admin", "old", 0L,
+                System.currentTimeMillis() - 60_000L, "");
+        assertTrue(service.applyEscalation(TARGET, "Alex").isEmpty());
+        assertFalse(service.isMuted(TARGET));
+    }
 }

@@ -36,16 +36,23 @@ public final class MatrixProvider implements ChatProvider {
     private final String roomId;
     private final String accessToken;
     private final String messageFormat;
+    private final int maxMessageLength;
 
     private volatile String lastError = "";
 
     public MatrixProvider(HttpTransport transport, String homeserver, String roomId, String accessToken,
             String messageFormat) {
+        this(transport, homeserver, roomId, accessToken, messageFormat, 1500);
+    }
+
+    public MatrixProvider(HttpTransport transport, String homeserver, String roomId, String accessToken,
+            String messageFormat, int maxMessageLength) {
         this.transport = transport;
         this.homeserver = trimTrailingSlash(homeserver);
         this.roomId = roomId == null ? "" : roomId.trim();
         this.accessToken = accessToken == null ? "" : accessToken.trim();
         this.messageFormat = messageFormat == null || messageFormat.isBlank() ? "%player%: %message%" : messageFormat;
+        this.maxMessageLength = Math.max(64, maxMessageLength);
     }
 
     @Override
@@ -102,12 +109,13 @@ public final class MatrixProvider implements ChatProvider {
 
     String render(ChatEvent event) {
         Map<String, String> values = new HashMap<>();
-        values.put("player", event.playerName());
+        values.put("player", com.adminmod.integrations.text.TextSanitizer.clean(event.playerName(), 64));
         values.put("uuid", event.playerUuid());
-        values.put("message", event.message());
+        values.put("message", com.adminmod.integrations.text.TextSanitizer.clean(event.message(), maxMessageLength));
         values.put("timestamp", Long.toString(event.timestampMillis()));
-        values.put("server", event.serverName());
-        return Template.render(messageFormat, values);
+        values.put("server", com.adminmod.integrations.text.TextSanitizer.clean(event.serverName(), 64));
+        return com.adminmod.integrations.text.TextSanitizer.truncate(
+                Template.render(messageFormat, values), maxMessageLength);
     }
 
     @Override

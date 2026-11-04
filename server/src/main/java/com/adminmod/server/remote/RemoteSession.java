@@ -41,6 +41,7 @@ public final class RemoteSession {
     private volatile State state = State.PENDING;
     private volatile boolean owner;
     private volatile int permissionLevel;
+    private volatile long lastActivityMillis = System.currentTimeMillis();
 
     public RemoteSession(UUID playerUuid, String playerName, byte[] clientNonce, byte[] serverNonce,
             PasswordVault vault, int requestsPerMinute, int consoleRequestsPerMinute) {
@@ -95,6 +96,16 @@ public final class RemoteSession {
 
     public void markAuthenticated() {
         this.state = State.AUTHENTICATED;
+        this.lastActivityMillis = System.currentTimeMillis();
+    }
+
+    /** Records activity so the idle-expiry check measures from the last real request. */
+    public void touch() {
+        this.lastActivityMillis = System.currentTimeMillis();
+    }
+
+    public long lastActivityMillis() {
+        return lastActivityMillis;
     }
 
     public void close() {
@@ -102,18 +113,30 @@ public final class RemoteSession {
     }
 
     /** Decrypts a frame after checking freshness and the rate budget. */
-    public byte[] open(byte[] ciphertext, long nonce, long timestamp, boolean console) throws SessionException {
+    public byte[] open(byte[] ciphertext, long nonce, long timestamp) throws SessionException {
         if (state == State.CLOSED) {
             throw new SessionException("session closed");
         }
         if (!replayGuard.accept(nonce, timestamp, System.currentTimeMillis())) {
             throw new SessionException("stale or replayed frame");
         }
-        SlidingWindowRateLimiter limiter = console ? consoleLimiter : generalLimiter;
-        if (!limiter.tryAcquire(System.currentTimeMillis())) {
+        if (!generalLimiter.tryAcquire(System.currentTimeMillis())) {
             throw new SessionException("rate limit exceeded");
         }
         return cipher.decrypt(ciphertext, nonce, timestamp);
+    }
+
+    /**
+     * Consumes one console budget slot.
+     *
+     * <p>The general limiter in {@link #open} runs before decryption, so it cannot know what the
+     * frame contains. Console commands are the expensive orders, so they are also charged against
+     * the stricter console budget once the order type has been read.
+     *
+     * @return {@code true} when the console budget had a slot free
+     */
+    public boolean acquireConsole() {
+        return consoleLimiter.tryAcquire(System.currentTimeMillis());
     }
 
     /** Encrypts an outgoing frame, returning the sealed envelope. */

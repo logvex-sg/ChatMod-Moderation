@@ -320,7 +320,46 @@ public final class RemoteRequestHandler {
                 staffName, reason, 0L, "warning");
         saveStore();
         onlinePlayer(name).ifPresent(player -> player.sendMessage(Text.of("Warning: " + reason), false));
+        notifyStaff(staffUuid, profile.get().getName() + " was warned by " + staffName
+                + reasonSuffix(reason));
+        applyEscalation(profile.get());
         return success(order, "warned " + profile.get().getName());
+    }
+
+    /**
+     * Applies the automatic escalation rule after a warning and announces the outcome.
+     *
+     * <p>The rule itself lives in {@link ModerationService}, which has no Minecraft dependency; this
+     * method only performs the in-game notices, which do.
+     */
+    private void applyEscalation(GameProfile profile) {
+        Optional<ModerationService.Escalation> escalation =
+                moderation.applyEscalation(profile.getId(), profile.getName());
+        if (escalation.isEmpty()) {
+            return;
+        }
+        ModerationService.Escalation fired = escalation.get();
+        saveStore();
+        onlinePlayer(profile.getName()).ifPresent(player -> player.sendMessage(
+                Text.of("You have been muted automatically: " + fired.punishment().reason()), false));
+        broadcast(config.moderation.broadcastPunishments, profile.getName()
+                + " was muted automatically after " + fired.recentWarnings() + " warnings"
+                + reasonSuffix(fired.punishment().reason()));
+    }
+
+    /** Sends a notice to online staff, so an action taken remotely is visible in-game. */
+    private void notifyStaff(UUID actorUuid, String message) {
+        if (!config.moderation.notifyStaff || message == null || message.isBlank()) {
+            return;
+        }
+        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+            if (player.getUuid().equals(actorUuid)) {
+                continue;
+            }
+            if (player.hasPermissionLevel(config.permissions.moderateLevel)) {
+                player.sendMessage(Text.of("[ADMIN] " + message), false);
+            }
+        }
     }
 
     private OrderResultMessage addNote(OrderMessage order, UUID staffUuid, String staffName) {
@@ -474,6 +513,11 @@ public final class RemoteRequestHandler {
         } catch (IOException e) {
             return failure(order, "the configuration could not be written");
         }
+        // A bridge setting can change which providers exist or how the queue is sized, so the
+        // bridge is rebuilt and its inbound readers restarted.
+        if (key.startsWith("chatbridge.") || key.startsWith("moderation.")) {
+            chatBridge.reload();
+        }
         return success(order, "updated " + key, Json.write(ConfigRedactor.view(config)));
     }
 
@@ -485,18 +529,22 @@ public final class RemoteRequestHandler {
             case "chatbridge.forwardcommands" -> config.chatBridge.forwardCommands = flag;
             case "chatbridge.forwardprivatemessages" -> config.chatBridge.forwardPrivateMessages = flag;
             case "chatbridge.forwardjoinleave" -> config.chatBridge.forwardJoinLeave = flag;
+            case "chatbridge.antispam" -> config.chatBridge.antiSpam.enabled = flag;
+            case "chatbridge.stripformatting" -> config.chatBridge.stripFormatting = flag;
             case "chatbridge.provider" -> {
-                String normalised = value.toLowerCase(Locale.ROOT);
-                if (!normalised.equals("discord") && !normalised.equals("matrix")
-                        && !normalised.equals("generic") && !normalised.equals("webhook")) {
+                if (!ChatBridgeService.isValidProvider(value)) {
                     return false;
                 }
-                config.chatBridge.provider = normalised;
+                config.chatBridge.provider = value.toLowerCase(Locale.ROOT);
             }
             case "moderation.requirereasons" -> config.moderation.requireReasons = flag;
             case "moderation.broadcastpunishments" -> config.moderation.broadcastPunishments = flag;
+            case "moderation.notifystaff" -> config.moderation.notifyStaff = flag;
+            case "moderation.escalation.enabled" -> config.moderation.escalation.enabled = flag;
             case "remoteadmin.allowremoteconsole" -> config.remoteAdmin.allowRemoteConsole = flag;
             case "remoteadmin.allowopmanagement" -> config.remoteAdmin.allowOpManagement = flag;
+            case "maintenance.enabled" -> config.maintenance.enabled = flag;
+            case "announcements.enabled" -> config.announcements.enabled = flag;
             default -> {
                 return false;
             }

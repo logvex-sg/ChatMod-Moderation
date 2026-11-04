@@ -22,6 +22,10 @@ gradle-app.setting
 run/
 */run/
 
+# Server/client log output
+logs/
+*/logs/
+
 # Local environment overrides
 .env
 local.properties

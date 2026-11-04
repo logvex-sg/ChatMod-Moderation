@@ -1,7 +1,6 @@
 package com.adminmod.server.chat;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -9,22 +8,21 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import com.adminmod.common.config.AdminConfig;
 import com.adminmod.common.model.Json;
+import com.adminmod.integrations.AntiSpamGuard;
 import com.adminmod.integrations.ChatDispatcher;
 import com.adminmod.integrations.ChatEvent;
 import com.adminmod.integrations.ChatFilter;
 import com.adminmod.integrations.ChatProvider;
-import com.adminmod.integrations.discord.DiscordProvider;
+import com.adminmod.integrations.ChatProviderFactory;
+import com.adminmod.integrations.discord.DiscordGatewayReceiver;
 import com.adminmod.integrations.http.HttpTransport;
 import com.adminmod.integrations.http.JdkHttpTransport;
 import com.adminmod.integrations.http.RetryPolicy;
 import com.adminmod.integrations.inbound.ChatSink;
 import com.adminmod.integrations.inbound.InboundChatBridge;
 import com.adminmod.integrations.inbound.InboundReceiver;
-import com.adminmod.integrations.discord.DiscordGatewayReceiver;
-import com.adminmod.integrations.matrix.MatrixProvider;
 import com.adminmod.integrations.matrix.MatrixSyncReceiver;
-import com.adminmod.integrations.webhook.GenericWebhookProvider;
-import com.adminmod.server.chat.MinecraftChatSink;
+import com.adminmod.integrations.text.TextSanitizer;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
@@ -34,6 +32,10 @@ import com.google.gson.JsonObject;
  * <p>{@link #onPublicChat} is called from the server tick thread and does nothing but a policy
  * check and a bounded enqueue; all network I/O happens on the dispatcher's own worker thread. If
  * the queue is full the oldest entry is dropped rather than stalling the tick.
+ *
+ * <p>The outbound destination list and the inbound readers are rebuilt by {@link #reload()} when
+ * the configuration changes through the dashboard. Rebuilding closes the old dispatcher, which
+ * drains its queue and stops its worker, so a reload cannot leak a thread or an HTTP connection.
  *
  * <p>The inbound direction is driven by {@link InboundChatBridge} and one receiver per enabled
  * platform. A receiver runs on its own thread and hands messages to a {@link ChatSink}, which the
@@ -47,12 +49,19 @@ public final class ChatBridgeService {
     /** How long an inbound line stays suppressed so it is not forwarded back out. */
     private static final long INBOUND_ECHO_WINDOW_MILLIS = 10_000L;
 
+    /** Upper bound on remembered command echoes and inbound lines, guarding against a flood. */
+    private static final int ECHO_MEMORY_LIMIT = 512;
+
     private final AdminConfig config;
-    private final ChatFilter filter;
+    private final HttpTransport transport;
     private final String serverName;
-    private final ChatProvider provider;
-    private final ChatDispatcher dispatcher;
-    private final InboundChatBridge inbound;
+
+    private volatile ChatFilter filter;
+    private volatile ChatDispatcher dispatcher;
+    private volatile InboundChatBridge inbound;
+    private volatile AntiSpamGuard antiSpam;
+    private volatile ChatSink sink = message -> {
+    };
 
     /**
      * Commands recently executed through the remote console.
@@ -78,30 +87,60 @@ public final class ChatBridgeService {
 
     public ChatBridgeService(AdminConfig config, String serverName, HttpTransport transport, ChatSink sink) {
         this.config = config;
-        this.filter = new ChatFilter(config.chatBridge);
+        this.transport = transport == null ? new JdkHttpTransport() : transport;
         this.serverName = serverName == null || serverName.isBlank() ? "Minecraft Server" : serverName;
-        this.provider = createProvider(config, transport);
-
-        Duration timeout = Duration.ofMillis(config.chatBridge.requestTimeoutMillis);
-        this.dispatcher = new ChatDispatcher(provider, config.chatBridge.queueCapacity,
-                config.chatBridge.maxAttempts, timeout, RetryPolicy.defaults());
-
-        this.inbound = new InboundChatBridge(config.chatBridge.inbound, sink == null ? message -> {
-        } : sink);
-        registerInboundReceivers(transport);
+        if (sink != null) {
+            this.sink = sink;
+        }
+        build();
     }
 
-    private void registerInboundReceivers(HttpTransport transport) {
+    /** Builds the outbound dispatcher and the inbound readers from the current configuration. */
+    private synchronized void build() {
+        this.filter = new ChatFilter(config.chatBridge);
+        this.antiSpam = new AntiSpamGuard(config.chatBridge.antiSpam);
+
+        List<ChatProvider> providers = ChatProviderFactory.all(config, transport);
+        Duration timeout = Duration.ofMillis(config.chatBridge.requestTimeoutMillis);
+        this.dispatcher = new ChatDispatcher(providers, config.chatBridge.queueCapacity,
+                config.chatBridge.maxAttempts, timeout, RetryPolicy.defaults());
+
+        InboundChatBridge bridge = new InboundChatBridge(config.chatBridge.inbound, sink);
         AdminConfig.Inbound settings = config.chatBridge.inbound;
-        if (!settings.enabled) {
-            return;
+        if (settings.enabled) {
+            if (settings.discord.enabled) {
+                bridge.register(new DiscordGatewayReceiver(settings.discord, settings.discordLabel, bridge));
+            }
+            if (settings.matrix.enabled) {
+                bridge.register(new MatrixSyncReceiver(settings.matrix, settings.matrixLabel, bridge, transport));
+            }
         }
-        if (settings.discord.enabled) {
-            inbound.register(new DiscordGatewayReceiver(settings.discord, settings.discordLabel, inbound));
+        this.inbound = bridge;
+    }
+
+    /**
+     * Rebuilds the bridge after the configuration changed.
+     *
+     * <p>The old inbound readers and dispatcher are closed first, so their threads stop before the
+     * replacements start. The new inbound readers are started here because, unlike the initial
+     * construction, the server and its sink already exist by the time a reload happens.
+     *
+     * @return the number of inbound readers that were started
+     */
+    public synchronized int reload() {
+        InboundChatBridge oldInbound = inbound;
+        ChatDispatcher oldDispatcher = dispatcher;
+        if (oldInbound != null) {
+            oldInbound.close();
         }
-        if (settings.matrix.enabled) {
-            inbound.register(new MatrixSyncReceiver(settings.matrix, settings.matrixLabel, inbound, transport));
+        if (oldDispatcher != null) {
+            oldDispatcher.close();
         }
+        recentCommands.clear();
+        inboundEchoes.clear();
+        build();
+        startInbound();
+        return inbound.receivers().size();
     }
 
     /** Starts the inbound readers. Called on server start, after the world exists. */
@@ -117,7 +156,11 @@ public final class ChatBridgeService {
 
     /** Attaches the sink that shows inbound messages in chat. */
     public void setSink(ChatSink sink) {
-        inbound.setSink(sink);
+        this.sink = sink == null ? message -> {
+        } : sink;
+        if (inbound != null) {
+            inbound.setSink(this.sink);
+        }
     }
 
     /** Records a line that was just displayed because it came from a platform. */
@@ -126,7 +169,7 @@ public final class ChatBridgeService {
             return;
         }
         long now = System.currentTimeMillis();
-        inboundEchoes.entrySet().removeIf(entry -> now - entry.getValue() > INBOUND_ECHO_WINDOW_MILLIS);
+        prune(inboundEchoes, now, INBOUND_ECHO_WINDOW_MILLIS);
         inboundEchoes.put(line.trim(), now);
     }
 
@@ -135,8 +178,7 @@ public final class ChatBridgeService {
             return false;
         }
         long now = System.currentTimeMillis();
-        String trimmed = text.trim();
-        Long at = inboundEchoes.get(trimmed);
+        Long at = inboundEchoes.get(text.trim());
         return at != null && now - at <= INBOUND_ECHO_WINDOW_MILLIS;
     }
 
@@ -156,23 +198,6 @@ public final class ChatBridgeService {
         return bridge;
     }
 
-    private static ChatProvider createProvider(AdminConfig config, HttpTransport transport) {
-        String id = config.chatBridge.provider == null ? "discord" : config.chatBridge.provider.toLowerCase(Locale.ROOT);
-        return switch (id) {
-            case "matrix" -> new MatrixProvider(transport, config.chatBridge.matrix.homeserver,
-                    config.chatBridge.matrix.roomId, config.chatBridge.matrix.accessToken,
-                    config.chatBridge.matrix.messageFormat);
-            case "generic", "webhook" -> new GenericWebhookProvider(transport, config.chatBridge.generic.url,
-                    config.chatBridge.generic.method, config.chatBridge.generic.payloadTemplate,
-                    config.chatBridge.generic.authHeader, config.chatBridge.generic.authToken,
-                    config.chatBridge.generic.headers, config.chatBridge.generic.contentType);
-            default -> new DiscordProvider(transport, config.chatBridge.discord.webhookUrl,
-                    config.chatBridge.discord.username, config.chatBridge.discord.avatarUrl,
-                    config.chatBridge.discord.useEmbeds, config.chatBridge.discord.messageFormat,
-                    config.chatBridge.discord.embedColor);
-        };
-    }
-
     /**
      * Submits a public chat message for forwarding.
      *
@@ -180,14 +205,25 @@ public final class ChatBridgeService {
      * @return {@code true} when the message was accepted for delivery
      */
     public boolean onPublicChat(String playerName, String playerUuid, String rawMessage) {
-        if (!filter.shouldForward(rawMessage)) {
+        ChatFilter policy = filter;
+        if (!policy.shouldForward(rawMessage)) {
             return false;
         }
-        dispatcher.enqueue(new ChatEvent(playerName, playerUuid, rawMessage, System.currentTimeMillis(), serverName));
+        String body = config.chatBridge.stripFormatting
+                ? TextSanitizer.clean(rawMessage, config.chatBridge.maxMessageLength)
+                : TextSanitizer.truncate(rawMessage, config.chatBridge.maxMessageLength);
+        if (body.isBlank()) {
+            return false;
+        }
+        String key = playerUuid == null || playerUuid.isBlank() ? playerName : playerUuid;
+        if (!antiSpam.accept(key, body, System.currentTimeMillis())) {
+            return false;
+        }
+        dispatcher.enqueue(new ChatEvent(playerName, playerUuid, body, System.currentTimeMillis(), serverName));
         return true;
     }
 
-    /** Sends a synthetic message, used for join/leave notifications. */
+    /** Sends a synthetic message, used for join/leave and announcement notifications. */
     public void onSystemMessage(String text) {
         if (text == null || text.isBlank() || !config.chatBridge.enabled) {
             return;
@@ -204,13 +240,14 @@ public final class ChatBridgeService {
         if (!config.chatBridge.forwardJoinLeave) {
             return;
         }
-        dispatcher.enqueue(new ChatEvent(serverName, "", text, System.currentTimeMillis(), serverName));
+        String body = TextSanitizer.truncate(text, config.chatBridge.maxMessageLength);
+        dispatcher.enqueue(new ChatEvent(serverName, "", body, System.currentTimeMillis(), serverName));
     }
 
     /** Records a command run through the remote console so its echo is not forwarded. */
     public void noteExecutedCommand(String command) {
         long now = System.currentTimeMillis();
-        recentCommands.entrySet().removeIf(entry -> now - entry.getValue() > COMMAND_ECHO_WINDOW_MILLIS);
+        prune(recentCommands, now, COMMAND_ECHO_WINDOW_MILLIS);
         if (command != null && !command.isBlank()) {
             recentCommands.put(command.trim(), now);
         }
@@ -233,8 +270,21 @@ public final class ChatBridgeService {
         return false;
     }
 
+    /** Keeps a timestamp map bounded: expired entries first, then the oldest if still too large. */
+    private static void prune(Map<String, Long> map, long now, long windowMillis) {
+        map.entrySet().removeIf(entry -> now - entry.getValue() > windowMillis);
+        if (map.size() > ECHO_MEMORY_LIMIT) {
+            map.entrySet().stream()
+                    .sorted(Map.Entry.comparingByValue())
+                    .limit(map.size() - ECHO_MEMORY_LIMIT)
+                    .map(Map.Entry::getKey)
+                    .toList()
+                    .forEach(map::remove);
+        }
+    }
+
     public ChatProvider provider() {
-        return provider;
+        return dispatcher.provider();
     }
 
     public ChatDispatcher dispatcher() {
@@ -247,54 +297,64 @@ public final class ChatBridgeService {
 
     /** JSON status for the Chat Bridge dashboard tab. Never contains credential material. */
     public String statusJson() {
+        ChatDispatcher current = dispatcher;
+        ChatProvider primary = current.provider();
         JsonObject root = new JsonObject();
         root.addProperty("enabled", config.chatBridge.enabled);
-        root.addProperty("provider", provider.id());
-        root.addProperty("configured", provider.isConfigured());
-        root.addProperty("destination", provider.describe());
+        root.addProperty("provider", primary.id());
+        root.addProperty("configured", primary.isConfigured());
+        root.addProperty("destination", primary.describe());
         root.addProperty("publicChatOnly", config.chatBridge.publicChatOnly);
         root.addProperty("forwardCommands", config.chatBridge.forwardCommands);
         root.addProperty("forwardPrivateMessages", config.chatBridge.forwardPrivateMessages);
-        root.addProperty("queued", dispatcher.queuedCount());
-        root.addProperty("delivered", dispatcher.deliveredCount());
-        root.addProperty("failed", dispatcher.failedCount());
-        root.addProperty("dropped", dispatcher.droppedCount());
+        root.addProperty("forwardJoinLeave", config.chatBridge.forwardJoinLeave);
+        root.addProperty("queued", current.queuedCount());
+        root.addProperty("delivered", current.deliveredCount());
+        root.addProperty("failed", current.failedCount());
+        root.addProperty("dropped", current.droppedCount());
+        root.addProperty("retries", current.retryCount());
+        root.addProperty("lastDeliveryStatus", current.lastDeliveryStatus());
+        root.addProperty("antiSpamEnabled", config.chatBridge.antiSpam.enabled);
 
         JsonArray integrations = new JsonArray();
-        JsonObject active = new JsonObject();
-        active.addProperty("id", provider.id());
-        active.addProperty("active", true);
-        active.addProperty("configured", provider.isConfigured());
-        active.addProperty("destination", provider.describe());
-        integrations.add(active);
+        for (ChatProvider provider : current.providers()) {
+            JsonObject entry = new JsonObject();
+            entry.addProperty("id", provider.id());
+            entry.addProperty("active", true);
+            entry.addProperty("configured", provider.isConfigured());
+            entry.addProperty("destination", provider.describe());
+            entry.addProperty("lastError", provider.lastError());
+            integrations.add(entry);
+        }
         for (String other : new String[] {"discord", "matrix", "generic"}) {
-            if (!other.equals(provider.id())) {
+            if (!other.equals(primary.id())) {
                 JsonObject inactive = new JsonObject();
                 inactive.addProperty("id", other);
                 inactive.addProperty("active", false);
                 inactive.addProperty("configured", false);
                 inactive.addProperty("destination", "not selected");
+                inactive.addProperty("lastError", "");
                 integrations.add(inactive);
             }
         }
         root.add("integrations", integrations);
 
         JsonArray errors = new JsonArray();
-        List<String> recent = new ArrayList<>(dispatcher.recentErrors());
-        for (String error : recent) {
+        for (String error : current.recentErrors()) {
             errors.add(error);
         }
         root.add("recentErrors", errors);
-        root.addProperty("lastError", provider.lastError());
+        root.addProperty("lastError", primary.lastError());
 
+        InboundChatBridge currentInbound = inbound;
         JsonObject inboundStatus = new JsonObject();
-        inboundStatus.addProperty("enabled", inbound.isEnabled());
-        inboundStatus.addProperty("received", inbound.receivedCount());
-        inboundStatus.addProperty("displayed", inbound.displayedCount());
-        inboundStatus.addProperty("dropped", inbound.droppedCount());
+        inboundStatus.addProperty("enabled", currentInbound.isEnabled());
+        inboundStatus.addProperty("received", currentInbound.receivedCount());
+        inboundStatus.addProperty("displayed", currentInbound.displayedCount());
+        inboundStatus.addProperty("dropped", currentInbound.droppedCount());
         inboundStatus.addProperty("format", config.chatBridge.inbound.format);
         JsonArray readers = new JsonArray();
-        for (InboundReceiver receiver : inbound.receivers()) {
+        for (InboundReceiver receiver : currentInbound.receivers()) {
             JsonObject reader = new JsonObject();
             reader.addProperty("id", receiver.id());
             reader.addProperty("running", receiver.isRunning());
@@ -308,7 +368,25 @@ public final class ChatBridgeService {
     }
 
     public void close() {
-        inbound.close();
-        dispatcher.close();
+        InboundChatBridge currentInbound = inbound;
+        ChatDispatcher currentDispatcher = dispatcher;
+        if (currentInbound != null) {
+            currentInbound.close();
+        }
+        if (currentDispatcher != null) {
+            currentDispatcher.close();
+        }
+        recentCommands.clear();
+        inboundEchoes.clear();
+    }
+
+    /** Exposed for the settings validator. */
+    public static boolean isValidProvider(String value) {
+        if (value == null) {
+            return false;
+        }
+        String normalised = value.toLowerCase(Locale.ROOT);
+        return normalised.equals("discord") || normalised.equals("matrix")
+                || normalised.equals("generic") || normalised.equals("webhook");
     }
 }

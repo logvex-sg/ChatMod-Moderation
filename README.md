@@ -250,18 +250,44 @@ permission levels in `permissions`.
         "syncTimeoutMillis": 30000,
         "syncLimit": 50
       }
+    },
+    "maxMessageLength": 1500,
+    "stripFormatting": true,
+    "blockedKeywords": [],
+    "extraDiscordChannels": [],
+    "extraMatrixRooms": [],
+    "antiSpam": {
+      "enabled": true,
+      "duplicateWindowSeconds": 8,
+      "maxDuplicates": 2,
+      "minIntervalMillis": 250
     }
   },
   "moderation": {
     "enabled": true,
     "requireReasons": true,
     "broadcastPunishments": true,
+    "notifyStaff": true,
+    "announceJoinLeave": false,
     "defaultKickReason": "Kicked by a staff member",
     "defaultBanReason": "Banned by a staff member",
     "defaultMuteReason": "Muted by a staff member",
     "defaultTempBanSeconds": 86400,
     "defaultTempMuteSeconds": 3600,
-    "maxPunishmentSeconds": 31536000
+    "maxPunishmentSeconds": 31536000,
+    "escalation": {
+      "enabled": false,
+      "warnThreshold": 3,
+      "windowSeconds": 604800,
+      "muteSeconds": 86400,
+      "reason": "Automatic mute: too many warnings"
+    },
+    "templates": [
+      { "name": "mute-1h", "type": "MUTE", "seconds": 3600, "reason": "Disruptive behaviour" },
+      { "name": "mute-1d", "type": "MUTE", "seconds": 86400, "reason": "Repeated disruptive behaviour" },
+      { "name": "ban-1d", "type": "BAN", "seconds": 86400, "reason": "Serious rule violation" },
+      { "name": "ban-perm", "type": "BAN", "seconds": 0, "reason": "Permanent removal" }
+    ]
   },
   "remoteAdmin": {
     "enabled": true,
@@ -272,6 +298,8 @@ permission levels in `permissions`.
     "allowRemoteConsole": true,
     "allowOpManagement": true,
     "revealPasswordToOperators": false,
+    "sessionTimeoutSeconds": 900,
+    "blockedCommands": ["stop", "restart"],
     "vaultDirectory": "H3h12n3jk12n3j123b12k312jhkh312v3h1gefrjkdnoip4235jk235k2nme"
   },
   "permissions": {
@@ -279,6 +307,20 @@ permission levels in `permissions`.
     "moderateLevel": 2,
     "adminLevel": 4,
     "moderators": []
+  },
+  "announcements": {
+    "enabled": false,
+    "intervalSeconds": 300,
+    "messages": []
+  },
+  "maintenance": {
+    "enabled": false,
+    "message": "The server is under maintenance and will be back shortly.",
+    "kickNonOperators": false,
+    "allowList": []
+  },
+  "logging": {
+    "level": "info"
   }
 }
 ```
@@ -287,6 +329,35 @@ Credentials are validated and clamped on load: blank secrets disable the affecte
 instead of failing the server, and out-of-range numbers fall back to safe defaults.
 
 Server commands: `/adminmod status`, `/adminmod bridge`, `/adminmod vault`, `/adminmod reload`.
+
+`/adminmod reload` re-reads the file and applies it live: the config object is updated in place,
+the chat bridge is rebuilt (new provider, queue size, readers) and the announcement timer is
+reset. A value the loader had to correct is reported back to the command sender.
+
+### Anti-spam guard
+
+The outbound guard exists so a player holding down a macro cannot flood the external channel or
+burn the webhook rate limit for everyone else. It drops, rather than queues:
+
+- an identical `(player, message)` pair repeated more than `maxDuplicates` times inside
+  `duplicateWindowSeconds`;
+- two messages from the same player closer together than `minIntervalMillis`.
+
+### Warning escalation
+
+When `moderation.escalation.enabled` is true, a player who accumulates `warnThreshold` active
+warnings inside `windowSeconds` is muted automatically for `muteSeconds` with the configured
+`reason`. The mute is recorded like any other punishment, so it appears in the history and can be
+lifted with the normal unmute path. The rule never double-mutes: a player who is already muted is
+left alone.
+
+### Announcements and maintenance
+
+- `announcements` rotates through `messages` in order, one every `intervalSeconds` (minimum 10).
+  Each line is broadcast in chat, so the chat bridge forwards it too.
+- `maintenance` shows `message` on join; with `kickNonOperators` true, anyone not on `allowList`
+  and not holding `permissions.adminLevel` is disconnected.
+
 
 ---
 

@@ -1,14 +1,10 @@
 package com.adminmod.server.command;
 
-import java.util.UUID;
-
 import com.adminmod.server.AdminServerMod;
 import com.adminmod.server.chat.ChatBridgeService;
 import com.adminmod.server.moderation.ModerationService;
-import com.mojang.brigadier.arguments.StringArgumentType;
 
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.text.Text;
 
@@ -24,7 +20,7 @@ public final class AdminCommand {
     private AdminCommand() {
     }
 
-    public static void register(MinecraftServer server) {
+    public static void register() {
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
                 dispatcher.register(CommandManager.literal("adminmod")
                         .requires(source -> source.hasPermissionLevel(4))
@@ -71,12 +67,12 @@ public final class AdminCommand {
     }
 
     private static int reload(net.minecraft.server.command.ServerCommandSource source) {
-        source.sendFeedback(() -> Text.of("Restart the server to apply configuration changes"), false);
+        AdminServerMod.ReloadOutcome outcome = AdminServerMod.reloadConfiguration();
+        if (!outcome.success()) {
+            source.sendError(Text.of("Reload failed: " + outcome.message()));
+            return 0;
+        }
+        source.sendFeedback(() -> Text.of("Configuration reloaded: " + outcome.message()), true);
         return 1;
-    }
-
-    /** Convenience for other server classes that need a UUID from a name-like argument. */
-    static UUID asUuid(String value) {
-        return UUID.fromString(value);
     }
 }

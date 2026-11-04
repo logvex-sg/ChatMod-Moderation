@@ -1,5 +1,6 @@
 package com.adminmod.integrations;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
@@ -10,6 +11,8 @@ import com.adminmod.common.config.AdminConfig;
  *
  * <p>This is the single place where the forwarding policy lives, so the answer to "can a
  * private message reach Discord?" is one short method rather than a search across the codebase.
+ * Keyword blocking is applied here too: a blocked message is dropped before it ever reaches the
+ * delivery queue, so it costs nothing on the network.
  */
 public final class ChatFilter {
 
@@ -39,7 +42,29 @@ public final class ChatFilter {
         if (isPrivateMessage(rawMessage)) {
             return config.forwardPrivateMessages;
         }
+        if (isBlocked(rawMessage)) {
+            return false;
+        }
         return config.publicChatOnly || config.forwardPrivateMessages;
+    }
+
+    /** @return {@code true} when a configured keyword appears in the message. */
+    public boolean isBlocked(String message) {
+        if (message == null || config.blockedKeywords.isEmpty()) {
+            return false;
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        for (String keyword : config.blockedKeywords) {
+            if (keyword != null && !keyword.isBlank() && lower.contains(keyword.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Exposed so callers that already know the message is public can skip the policy check. */
+    public List<String> blockedKeywords() {
+        return List.copyOf(config.blockedKeywords);
     }
 
     /**

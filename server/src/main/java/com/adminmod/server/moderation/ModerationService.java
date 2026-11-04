@@ -65,6 +65,38 @@ public final class ModerationService {
         return store.countWarnings(uuid);
     }
 
+    /** An automatic escalation that fired, with the warning count that triggered it. */
+    public record Escalation(Punishment punishment, int recentWarnings) {
+    }
+
+    /**
+     * Applies the automatic escalation rule for a player.
+     *
+     * <p>When the player has accumulated the configured number of warnings inside the window and is
+     * not already muted, the configured mute is recorded as an ordinary punishment, so it appears
+     * in the history and can be lifted with the normal unmute path.
+     *
+     * <p>Kept here rather than in the request handler because it is pure bookkeeping: it reads the
+     * store and writes a punishment, with no Minecraft type involved, which makes the rule
+     * testable without a server.
+     *
+     * @return the escalation that fired, or empty when the rule did not
+     */
+    public Optional<Escalation> applyEscalation(UUID targetUuid, String targetName) {
+        AdminConfig.Escalation rule = config.moderation.escalation;
+        if (!rule.enabled || isMuted(targetUuid)) {
+            return Optional.empty();
+        }
+        long since = rule.windowSeconds <= 0L ? 0L : System.currentTimeMillis() - rule.windowSeconds * 1000L;
+        int recent = store.countWarningsSince(targetUuid, since);
+        if (recent < rule.warnThreshold) {
+            return Optional.empty();
+        }
+        Punishment punishment = record(PunishmentType.MUTE, targetUuid, targetName, null, "ADMIN (automatic)",
+                rule.reason, rule.muteSeconds, "escalation");
+        return Optional.of(new Escalation(punishment, recent));
+    }
+
     /** JSON view of a player's full moderation history. */
     public String historyJson(UUID uuid) {
         JsonObject root = new JsonObject();
