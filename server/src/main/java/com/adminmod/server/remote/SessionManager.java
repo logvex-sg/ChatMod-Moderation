@@ -380,10 +380,14 @@ public final class SessionManager {
         if (config.remoteAdmin.allowPasswordAuth && !config.remoteAdmin.requirePairedClient) {
             mask |= 1 << AuthMode.PASSWORD.id();
         }
-        if (config.remoteAdmin.allowPairing) {
-            mask |= 1 << AuthMode.PAIRING_KEY.id();
+        // Pairing and client-secret authentication both need the registry; without it neither mode
+        // is advertised, so a client is never told it may use a path the server cannot serve.
+        if (pairing != null) {
+            if (config.remoteAdmin.allowPairing) {
+                mask |= 1 << AuthMode.PAIRING_KEY.id();
+            }
+            mask |= 1 << AuthMode.CLIENT_SECRET.id();
         }
-        mask |= 1 << AuthMode.CLIENT_SECRET.id();
         return mask;
     }
 
