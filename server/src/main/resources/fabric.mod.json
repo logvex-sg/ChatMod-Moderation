@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "adminmod",
+  "version": "1.0.0",
+  "name": "ADMIN Mod (Server)",
+  "description": "Server-side moderation, public chat bridge and remote administration endpoint.",
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "main": [
+      "com.adminmod.server.AdminServerMod"
+    ]
+  },
+  "mixins": [
+    "adminmod-server.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.10",
+    "minecraft": "~1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

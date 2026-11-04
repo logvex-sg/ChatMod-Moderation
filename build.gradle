@@ -1,0 +1,84 @@
+subprojects {
+    apply plugin: 'java-library'
+
+    group = project.property('mod.group')
+    version = project.property('mod.version')
+
+    repositories {
+        mavenCentral()
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+    }
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(21)
+        }
+        withSourcesJar()
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+        options.release = 21
+    }
+
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+        testLogging {
+            events 'passed', 'skipped', 'failed'
+            exceptionFormat 'full'
+        }
+    }
+
+    dependencies {
+        testImplementation platform('org.junit:junit-bom:5.11.3')
+        testImplementation 'org.junit.jupiter:junit-jupiter'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+}
+
+// Convenience entry points matching the documented commands. Each also copies the distributable
+// into the root build/libs so the documented paths exist regardless of which command is run.
+tasks.register('buildServer') {
+    group = 'build'
+    description = 'Builds the dedicated-server distributable.'
+    dependsOn ':server:build'
+    doLast {
+        copyDistributable(':server', 'ADMIN-Server.jar')
+    }
+}
+
+tasks.register('buildClient') {
+    group = 'build'
+    description = 'Builds the client distributable.'
+    dependsOn ':client:build'
+    doLast {
+        copyDistributable(':client', 'ADMIN-Client.jar')
+    }
+}
+
+tasks.register('buildAll') {
+    group = 'build'
+    description = 'Builds both distributables.'
+    dependsOn 'buildServer', 'buildClient'
+}
+
+// `./gradlew build` should leave both distributables in the root build/libs alongside the module
+// outputs, so the documented artifact paths are always correct.
+tasks.register('build') {
+    group = 'build'
+    description = 'Builds both distributables into build/libs.'
+    dependsOn 'buildAll'
+}
+
+def copyDistributable(String modulePath, String fileName) {
+    def source = project(modulePath).layout.buildDirectory.file("libs/${fileName}").get().asFile
+    def target = layout.buildDirectory.dir('libs').get().asFile
+    if (!source.exists()) {
+        throw new GradleException("Expected distributable was not produced: ${source}")
+    }
+    target.mkdirs()
+    new File(target, fileName).bytes = source.bytes
+}

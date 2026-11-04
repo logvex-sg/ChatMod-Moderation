@@ -1,0 +1,34 @@
+# Build outputs
+build/
+*/build/
+out/
+
+# Gradle
+.gradle/
+*/.gradle/
+gradle-app.setting
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+
+# Minecraft run directories (worlds, logs, and the credential vault)
+run/
+*/run/
+
+# Local environment overrides
+.env
+local.properties
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Agent scratch
+.agent_tmp/

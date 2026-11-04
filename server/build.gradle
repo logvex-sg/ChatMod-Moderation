@@ -1,0 +1,48 @@
+plugins {
+    id 'fabric-loom' version '1.10.5'
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    implementation project(':common')
+    implementation project(':integrations')
+}
+
+// The distributable has to be self-contained. common and integrations are plain JVM libraries with
+// no Minecraft dependency, so their classes are folded straight into the mod jar instead of being
+// shipped as separate nested mods. gson and slf4j are already supplied by the loader at runtime.
+tasks.named('jar', Jar) {
+    from { project(':common').sourceSets.main.output }
+    from { project(':integrations').sourceSets.main.output }
+}
+
+// Acceptance check: the dedicated-server jar must never reference a client class. A single
+// accidental import of net.minecraft.client would otherwise only show up as a crash on a real
+// server, where the class does not exist.
+tasks.register('verifyNoClientClasses') {
+    dependsOn tasks.named('compileJava')
+    def classesDir = layout.buildDirectory.dir('classes/java/main')
+    inputs.dir(classesDir)
+    doLast {
+        def offenders = com.adminmod.build.JarScan.scanForNeedle(classesDir.get().asFile,
+                'net/minecraft/client/')
+        if (!offenders.isEmpty()) {
+            throw new GradleException('Server classes reference client-only classes:\n'
+                    + offenders.join('\n'))
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyNoClientClasses')
+}
+
+// Distributable name required by the specification.
+tasks.named('remapJar') {
+    archiveBaseName.set('ADMIN-Server')
+    archiveVersion.set('')
+}

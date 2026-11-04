@@ -1,0 +1,42 @@
+plugins {
+    id 'fabric-loom' version '1.10.5'
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    implementation project(':common')
+}
+
+// Same reasoning as the server jar: common is a plain library and must travel inside the mod.
+tasks.named('jar', Jar) {
+    from { project(':common').sourceSets.main.output }
+}
+
+// Acceptance check: the client jar must not carry server-side logic or credentials handling.
+tasks.register('verifyNoServerClasses') {
+    dependsOn tasks.named('compileJava')
+    def classesDir = layout.buildDirectory.dir('classes/java/main')
+    inputs.dir(classesDir)
+    doLast {
+        def offenders = com.adminmod.build.JarScan.scanForNeedle(classesDir.get().asFile,
+                'com/adminmod/server/')
+        if (!offenders.isEmpty()) {
+            throw new GradleException('Client classes reference server-side classes:\n'
+                    + offenders.join('\n'))
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyNoServerClasses')
+}
+
+// Distributable name required by the specification.
+tasks.named('remapJar') {
+    archiveBaseName.set('ADMIN-Client')
+    archiveVersion.set('')
+}
