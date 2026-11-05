@@ -73,6 +73,8 @@ public final class ModularConfigLoader {
         map.put("remoteadmin.json", List.of("remoteAdmin"));
         map.put("performance.json", List.of("performance", "alerts"));
         map.put("protection.json", List.of("protection"));
+        map.put("audit.json", List.of("audit"));
+        map.put("storage.json", List.of("storage"));
         return java.util.Collections.unmodifiableMap(map);
     }
 
@@ -243,6 +245,16 @@ public final class ModularConfigLoader {
                     target.protection = partial.protection;
                 }
             }
+            case "audit" -> {
+                if (partial.audit != null) {
+                    target.audit = partial.audit;
+                }
+            }
+            case "storage" -> {
+                if (partial.storage != null) {
+                    target.storage = partial.storage;
+                }
+            }
             default -> {
                 // Unknown section names are ignored; the file may be from a newer build.
             }
@@ -267,6 +279,8 @@ public final class ModularConfigLoader {
             case "performance" -> config.performance;
             case "alerts" -> config.alerts;
             case "protection" -> config.protection;
+            case "audit" -> config.audit;
+            case "storage" -> config.storage;
             default -> null;
         };
     }

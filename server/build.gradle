@@ -10,14 +10,28 @@ dependencies {
 
     implementation project(':common')
     implementation project(':integrations')
+
+    // The default storage codec is Zstandard. The codec looks this up reflectively and falls back
+    // to the always-present GZIP when it is missing, so bundling it makes the default work out of
+    // the box without turning the native library into a hard runtime dependency. The client never
+    // compresses, so it is not carried there.
+    implementation 'com.github.luben:zstd-jni:1.5.6-4'
 }
 
 // The distributable has to be self-contained. common and integrations are plain JVM libraries with
 // no Minecraft dependency, so their classes are folded straight into the mod jar instead of being
 // shipped as separate nested mods. gson and slf4j are already supplied by the loader at runtime.
+// zstd-jni, including its native binaries, is shaded in the same way so the default codec works.
 tasks.named('jar', Jar) {
     from { project(':common').sourceSets.main.output }
     from { project(':integrations').sourceSets.main.output }
+    from {
+        configurations.runtimeClasspath.filter { it.name.startsWith('zstd-jni') }.collect { zipTree(it) }
+    }
+    // Shading a signed jar would leave signatures that no longer verify; drop them and the foreign
+    // manifest so only the mod's own metadata remains.
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/MANIFEST.MF'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
 
 // Acceptance check: the dedicated-server jar must never reference a client class. A single

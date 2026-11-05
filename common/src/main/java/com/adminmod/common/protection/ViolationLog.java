@@ -50,6 +50,17 @@ public final class ViolationLog {
     private final Deque<Violation> recent = new ArrayDeque<>();
     private final Map<Kind, Long> counts = new LinkedHashMap<>();
     private volatile Violation last;
+    private volatile Listener listener;
+
+    /**
+     * Receives every trigger, so the audit log can mirror it durably.
+     *
+     * <p>Set once at startup. The callback must be cheap and must not throw; the protection layer
+     * treats a failure as a no-op rather than letting it disrupt the packet being handled.
+     */
+    public interface Listener {
+        void onViolation(Kind kind, String subject, String detail, long at);
+    }
 
     public ViolationLog() {
         this(128);
@@ -68,6 +79,19 @@ public final class ViolationLog {
         }
         recent.addLast(violation);
         last = violation;
+        Listener current = listener;
+        if (current != null) {
+            try {
+                current.onViolation(key, violation.subject(), violation.detail(), violation.at());
+            } catch (RuntimeException ignored) {
+                // A misbehaving listener must never break the check that triggered it.
+            }
+        }
+    }
+
+    /** Installs the listener that mirrors triggers into the audit log. */
+    public void setListener(Listener listener) {
+        this.listener = listener;
     }
 
     public synchronized long count(Kind kind) {

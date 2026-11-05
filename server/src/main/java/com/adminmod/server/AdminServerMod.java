@@ -18,6 +18,7 @@ import com.adminmod.common.net.AdminProtocol;
 import com.adminmod.common.protection.ProtectionManager;
 import com.adminmod.common.protection.ViolationLog;
 import com.adminmod.common.model.PlayerSummary;
+import com.adminmod.server.audit.AuditManager;
 import com.adminmod.server.auth.CredentialService;
 import com.adminmod.server.auth.PairingService;
 import com.adminmod.server.auth.PermissionService;
@@ -33,8 +34,11 @@ import com.adminmod.server.remote.RemoteRequestHandler;
 import com.adminmod.server.remote.SessionManager;
 
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
+import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerLoginConnectionEvents;
@@ -42,6 +46,7 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.util.math.BlockPos;
 
 /**
  * Server distribution entrypoint.
@@ -76,7 +81,11 @@ public final class AdminServerMod implements ModInitializer {
     private static MetricsRecorder metrics;
     private static PerformanceMonitor performance;
     private static DiagnosticsService diagnostics;
+    private static AuditManager audit;
     private static long startedAt = System.currentTimeMillis();
+
+    /** Join time per player, so a leave can record how long the session lasted. */
+    private static final java.util.Map<String, Long> sessionStart = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Override
     public void onInitialize() {
@@ -128,6 +137,13 @@ public final class AdminServerMod implements ModInitializer {
                 ServerPlayerEntity player = handler.getPlayer();
                 guard.onLeave(player.getUuidAsString(), player.getIp());
             }
+            AuditManager auditLog = audit;
+            if (auditLog != null) {
+                ServerPlayerEntity player = handler.getPlayer();
+                Long joined = sessionStart.remove(player.getUuidAsString());
+                long duration = joined == null ? 0L : System.currentTimeMillis() - joined;
+                auditLog.leave(player.getGameProfile().getName(), player.getUuidAsString(), duration);
+            }
         });
 
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
@@ -138,6 +154,12 @@ public final class AdminServerMod implements ModInitializer {
             ProtectionManager guard = protection;
             if (guard != null) {
                 guard.onJoin(handler.getPlayer().getUuidAsString(), System.currentTimeMillis());
+            }
+            AuditManager auditLog = audit;
+            if (auditLog != null) {
+                ServerPlayerEntity player = handler.getPlayer();
+                sessionStart.put(player.getUuidAsString(), System.currentTimeMillis());
+                auditLog.join(player.getGameProfile().getName(), player.getUuidAsString(), player.getIp());
             }
         });
 
@@ -178,11 +200,15 @@ public final class AdminServerMod implements ModInitializer {
 
         ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
             ChatBridgeService bridge = chatBridge;
-            if (bridge == null) {
-                return;
+            if (bridge != null) {
+                bridge.onPublicChat(sender.getGameProfile().getName(), sender.getUuidAsString(),
+                        message.getContent().getString());
             }
-            bridge.onPublicChat(sender.getGameProfile().getName(), sender.getUuidAsString(),
-                    message.getContent().getString());
+            AuditManager auditLog = audit;
+            if (auditLog != null) {
+                auditLog.chat(sender.getGameProfile().getName(), sender.getUuidAsString(),
+                        message.getContent().getString());
+            }
         });
 
         // Proximity routing runs inside the broadcast, before delivery and before CHAT_MESSAGE. When
@@ -202,6 +228,51 @@ public final class AdminServerMod implements ModInitializer {
                 return;
             }
             bridge.onSystemMessage(message.getString());
+        });
+
+        // Audit hooks. These run on the server thread and only build a small record and enqueue it,
+        // so they add no measurable tick cost. Each one is wrapped so a failure in the audit path
+        // can never disturb the gameplay event it observes.
+        ServerLivingEntityEvents.AFTER_DEATH.register((entity, damageSource) -> {
+            AuditManager auditLog = audit;
+            if (auditLog == null || !(entity instanceof ServerPlayerEntity player)) {
+                return;
+            }
+            try {
+                String cause = damageSource == null || damageSource.getAttacker() == null
+                        ? "environment"
+                        : damageSource.getAttacker().getName().getString();
+                auditLog.death(player.getGameProfile().getName(), player.getUuidAsString(), cause);
+            } catch (RuntimeException ignored) {
+                // The audit path never breaks a gameplay event.
+            }
+        });
+
+        ServerPlayerEvents.AFTER_RESPAWN.register((oldPlayer, newPlayer, alive) -> {
+            AuditManager auditLog = audit;
+            if (auditLog == null || newPlayer == null) {
+                return;
+            }
+            try {
+                auditLog.respawn(newPlayer.getGameProfile().getName(), newPlayer.getUuidAsString());
+            } catch (RuntimeException ignored) {
+                // As above.
+            }
+        });
+
+        PlayerBlockBreakEvents.AFTER.register((world, player, pos, state, entity) -> {
+            AuditManager auditLog = audit;
+            if (auditLog == null || !(player instanceof ServerPlayerEntity serverPlayer)) {
+                return;
+            }
+            try {
+                BlockPos blockPos = pos;
+                String blockId = net.minecraft.registry.Registries.BLOCK.getId(state.getBlock()).toString();
+                auditLog.blockBreak(serverPlayer.getGameProfile().getName(), serverPlayer.getUuidAsString(),
+                        blockId, blockPos.getX(), blockPos.getY(), blockPos.getZ());
+            } catch (RuntimeException ignored) {
+                // As above.
+            }
         });
     }
 
@@ -289,6 +360,23 @@ public final class AdminServerMod implements ModInitializer {
         requestHandler.setDiagnostics(diagnostics);
         requestHandler.setProtection(protection);
 
+        // The audit log is opened after diagnostics so it can be reported on, and before the ticker
+        // so its compression pass can pause on the live MSPT reading. Its directory sits beside the
+        // other ADMIN data and is restricted like the configuration.
+        try {
+            audit = new AuditManager(configDirectory.resolve("audit"), config, performance::lastMspt);
+            audit.start();
+            protection.violations().setListener((kind, subject, detail, at) ->
+                    audit.protection(subject, kind.name().toLowerCase(java.util.Locale.ROOT), detail));
+            moderation.setAudit(audit);
+            requestHandler.setAudit(audit);
+            sessions.setAudit(audit);
+            audit.server("server started");
+        } catch (IOException e) {
+            LOGGER.error("Could not open the audit log; audit recording is disabled", e);
+            audit = null;
+        }
+
         ticker = new ServerTicker(config, sessions);
 
         // Inbound readers are started only now: the sink broadcasts through the server, which
@@ -301,6 +389,10 @@ public final class AdminServerMod implements ModInitializer {
     }
 
     private void onServerStopping(MinecraftServer server) {
+        if (audit != null) {
+            audit.server("server stopping");
+            audit.close();
+        }
         if (chatBridge != null) {
             chatBridge.close();
         }
@@ -325,6 +417,8 @@ public final class AdminServerMod implements ModInitializer {
         diagnostics = null;
         performance = null;
         playerCache = null;
+        audit = null;
+        sessionStart.clear();
         if (protection != null) {
             protection.clear();
         }
@@ -386,6 +480,10 @@ public final class AdminServerMod implements ModInitializer {
             events.server("configuration reloaded (" + (report.isEmpty() ? "no corrections" : report.notes().size()
                     + " correction(s)") + ")");
         }
+        if (audit != null) {
+            audit.reload();
+            audit.config("console", "reload", report.isEmpty() ? "clean" : report.notes().size() + " corrections");
+        }
         String detail = report.isEmpty() ? "no corrections were needed"
                 : report.notes().size() + " correction(s) applied";
         return new ReloadOutcome(true, detail);
@@ -409,6 +507,8 @@ public final class AdminServerMod implements ModInitializer {
         target.performance = source.performance;
         target.alerts = source.alerts;
         target.logging = source.logging;
+        target.storage = source.storage;
+        target.audit = source.audit;
     }
 
     public static Path configPath() {
@@ -481,6 +581,11 @@ public final class AdminServerMod implements ModInitializer {
 
     public static DiagnosticsService diagnostics() {
         return diagnostics;
+    }
+
+    /** The audit log, or {@code null} when it could not be opened. */
+    public static AuditManager audit() {
+        return audit;
     }
 
     public static long startedAt() {

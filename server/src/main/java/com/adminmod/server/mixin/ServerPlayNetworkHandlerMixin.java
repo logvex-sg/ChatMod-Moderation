@@ -145,6 +145,12 @@ public abstract class ServerPlayNetworkHandlerMixin {
         }
         if (!guard.allowCommand(adminmod$key(player), command, System.currentTimeMillis())) {
             ci.cancel();
+            return;
+        }
+        // The audit log records the command name only, never its arguments.
+        com.adminmod.server.audit.AuditManager auditLog = AdminServerMod.audit();
+        if (auditLog != null) {
+            auditLog.command(player.getGameProfile().getName(), player.getUuidAsString(), command, false);
         }
     }
 

@@ -40,6 +40,8 @@ public final class AdminConfig {
     public Performance performance = new Performance();
     public Alerts alerts = new Alerts();
     public Logging logging = new Logging();
+    public Audit audit = new Audit();
+    public Storage storage = new Storage();
 
     public static final class ChatBridge {
         public boolean enabled = true;
@@ -578,5 +580,101 @@ public final class AdminConfig {
         public int queueWarnDepth = 400;
         /** Minimum gap between two alerts of the same kind, in seconds. */
         public long alertCooldownSeconds = 60L;
+    }
+
+    /**
+     * Audit and investigation settings.
+     *
+     * <p>The audit log is the long-lived record of who did what: joins, leaves, deaths, dimension
+     * changes, block and container activity, commands, moderation actions and configuration
+     * changes. It is stored separately from the in-memory {@link EventHistory} ring because it is
+     * meant to survive restarts and to be searched, not just displayed.
+     *
+     * <p>Nothing here records passwords, authentication secrets or private chat. Player chat is
+     * deliberately absent from the default category set; an operator who wants it must opt in and
+     * accept the privacy cost, and even then only public chat is eligible.
+     */
+    public static final class Audit {
+        /** Master switch. When off, no audit events are recorded. */
+        public boolean enabled = true;
+        /**
+         * Categories that are recorded. Removing a category stops it being written, which is the
+         * supported way to reduce volume without losing the rest of the log.
+         */
+        public List<String> categories = List.of(
+                "PLAYER", "MOVEMENT", "BLOCK", "CONTAINER", "COMMAND", "MODERATION", "PERMISSION",
+                "ANTICHEAT", "ANTIDUPE", "CONFIG", "SECURITY", "SERVER");
+        /** Record a player's own chat as an audit event. Off by default: it is the most sensitive. */
+        public boolean recordChat = false;
+        /** Days a non-security event is kept before retention deletes it. */
+        public int retentionDays = 30;
+        /**
+         * Days a security event (a moderation action, a permission change, a protection trigger,
+         * an authentication event) is kept. Security events are exempt from the ordinary sweep.
+         */
+        public int securityRetentionDays = 365;
+        /** Most events held in memory for the live view before the oldest is spilled to disk. */
+        public int memoryBuffer = 2_048;
+        /** Most events accepted into the write queue before new ones are dropped and counted. */
+        public int queueCapacity = 16_384;
+        /** Most events a single search returns. */
+        public int maxQueryResults = 1_000;
+        /** Smallest number of events in one on-disk batch. */
+        public int batchSize = 256;
+        /** Seconds between two automatic flushes of the in-memory buffer. */
+        public int flushIntervalSeconds = 15;
+        /**
+         * When true, events are written straight to the store rather than buffered. Useful for a
+         * security-critical server at the cost of more disk writes; off by default.
+         */
+        public boolean writeThrough = false;
+    }
+
+    /**
+     * Compressed storage settings.
+     *
+     * <p>Everything ADMIN persists grows without bound unless it is pruned, so the store keeps
+     * recent data uncompressed and quick to search and compresses it once it is old enough to be
+     * read rarely. Compression runs on a background worker; it is never allowed on the server tick
+     * thread.
+     */
+    public static final class Storage {
+        /** Master switch for automatic compression. Retention still applies when off. */
+        public boolean enabled = true;
+        /** Preferred algorithm: {@code zstd}, {@code gzip} or {@code none}. */
+        public String algorithm = "zstd";
+        /** Requested compression level, clamped to the chosen codec's range. */
+        public int level = 3;
+        /** Seconds between two automatic compression passes. */
+        public int compressIntervalSeconds = 300;
+        /** Minimum age, in hours, before a record is eligible for compression. */
+        public int minArchiveAgeHours = 6;
+        /** Most decompressed bytes a single archive may claim, so a bad header cannot exhaust memory. */
+        public int maxDecompressBytes = 64 * 1024 * 1024;
+        /** Most worker threads doing compression. */
+        public int workerThreads = 1;
+        /** Most records queued for compression before the pass is paused. */
+        public int maxQueue = 4_096;
+        /** Smallest number of records combined into one archive. */
+        public int batchSize = 128;
+        /** Most decompressed records kept in the hot cache. */
+        public int cacheEntries = 256;
+        /** Most bytes the hot cache may hold. */
+        public int cacheMaxBytes = 32 * 1024 * 1024;
+        /** Target size of one rotated archive file, in bytes. */
+        public long maxArchiveBytes = 64L * 1024 * 1024;
+        /** Most archive files kept before the oldest is removed. */
+        public int maxArchives = 64;
+        /** Whether identical records are stored once, which is what makes deduplication safe. */
+        public boolean deduplicate = true;
+        /** Identical records seen inside this window are stored once, in milliseconds. */
+        public long dedupeWindowMillis = 250L;
+        /**
+         * When true, a compression pass is skipped while the server is severely lagging. The pass
+         * resumes on the next interval once the lag clears.
+         */
+        public boolean pauseDuringLag = true;
+        /** MSPT above which a running compression pass pauses. */
+        public double pauseMsptThreshold = 60.0;
     }
 }

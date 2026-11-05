@@ -61,6 +61,7 @@ public final class SessionManager {
     private final AuthThrottle throttle;
     private final AuthHistory history;
     private final String serverVersion;
+    private com.adminmod.server.audit.AuditManager audit;
 
     public SessionManager(CredentialService credentials, AdminConfig config, PermissionService permissions,
             RemoteRequestHandler handler, PairingService pairing, String serverVersion) {
@@ -73,6 +74,22 @@ public final class SessionManager {
         this.throttle = new AuthThrottle(config.remoteAdmin.authFailureLimit,
                 config.remoteAdmin.authLockoutSeconds * 1000L);
         this.history = new AuthHistory(config.remoteAdmin.authHistoryLimit);
+    }
+
+    /**
+     * Injected after construction so authentication failures, lockouts and denials are mirrored to
+     * the durable audit log. Those are the security events an operator most needs to review after
+     * the fact, and they are not written anywhere else.
+     */
+    public void setAudit(com.adminmod.server.audit.AuditManager audit) {
+        this.audit = audit;
+    }
+
+    /** Records a security event, tolerating the case where the audit log could not be opened. */
+    private void security(String actor, String detail, com.adminmod.common.audit.AuditSeverity severity) {
+        if (audit != null) {
+            audit.security(actor, null, severity, detail);
+        }
     }
 
     public RemoteSession session(UUID playerUuid) {
@@ -225,6 +242,9 @@ public final class SessionManager {
         if (!permissions.allows(order.orderType(), role)) {
             history.record(player.getGameProfile().getName(), "denied:" + order.orderType(),
                     false, "role " + role);
+            security(player.getGameProfile().getName(),
+                    "order " + order.orderType() + " denied for role " + role,
+                    com.adminmod.common.audit.AuditSeverity.WARNING);
             return seal(session, new OrderResultMessage(order.requestId(), false, "permission denied"));
         }
 
@@ -249,12 +269,16 @@ public final class SessionManager {
         }
         if (!buildAllowed(handshake.buildId())) {
             history.record(name, "handshake", false, "build rejected: " + handshake.buildId());
+            security(name, "handshake refused: unlisted client build " + handshake.buildId(),
+                    com.adminmod.common.audit.AuditSeverity.NOTICE);
             return plaintextResult(new HandshakeResultMessage(AdminProtocol.PROTOCOL_VERSION, serverVersion,
                     AdminProtocol.BUILD_ID, serverNonce, HandshakeResultMessage.STATUS_BUILD_REJECTED,
                     allowedModes()));
         }
         if (throttle.isLockedOut(address, now)) {
             history.record(name, "handshake", false, "locked out");
+            security(name, "handshake refused: address locked out (" + address + ")",
+                    com.adminmod.common.audit.AuditSeverity.WARNING);
             return plaintextResult(new HandshakeResultMessage(AdminProtocol.PROTOCOL_VERSION, serverVersion,
                     AdminProtocol.BUILD_ID, serverNonce, HandshakeResultMessage.STATUS_LOCKED_OUT, allowedModes()));
         }
@@ -371,6 +395,11 @@ public final class SessionManager {
         throttle.recordFailure(address, now);
         history.record(player.getGameProfile().getName(),
                 session.isKeyProven() ? "frame" : "authentication", false, "authentication failed");
+        security(player.getGameProfile().getName(),
+                "authentication failed from " + address,
+                throttle.isLockedOut(address, now)
+                        ? com.adminmod.common.audit.AuditSeverity.CRITICAL
+                        : com.adminmod.common.audit.AuditSeverity.WARNING);
         sessions.remove(player.getUuid(), session);
         session.close();
     }

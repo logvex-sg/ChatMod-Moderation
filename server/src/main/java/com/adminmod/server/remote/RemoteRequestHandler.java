@@ -71,6 +71,7 @@ public final class RemoteRequestHandler {
     private Path localChatPath;
     private com.adminmod.server.diagnostics.DiagnosticsService diagnostics;
     private com.adminmod.common.protection.ProtectionManager protection;
+    private com.adminmod.server.audit.AuditManager audit;
 
     public RemoteRequestHandler(MinecraftServer server, AdminConfig config, Path configPath,
             PermissionService permissions, ModerationService moderation, ChatBridgeService chatBridge,
@@ -108,6 +109,11 @@ public final class RemoteRequestHandler {
     /** Injected after construction so the protection tab can read the anti-crash state. */
     public void setProtection(com.adminmod.common.protection.ProtectionManager protection) {
         this.protection = protection;
+    }
+
+    /** Injected after construction so the audit tab can read and search the audit log. */
+    public void setAudit(com.adminmod.server.audit.AuditManager audit) {
+        this.audit = audit;
     }
 
     /** Live permission level of a connected player: 4 for operators, otherwise 0. */
@@ -165,6 +171,11 @@ public final class RemoteRequestHandler {
                 case SET_PROFILE -> setProfile(order, staffName);
                 case PROTECTION_STATUS -> protectionStatus(order);
                 case CLEAR_VIOLATIONS -> clearViolations(order, staffName);
+                case AUDIT_SEARCH -> auditSearch(order);
+                case AUDIT_STATUS -> auditStatus(order);
+                case AUDIT_ARCHIVES -> auditArchives(order);
+                case AUDIT_EXPORT -> auditExport(order, staffName);
+                case AUDIT_COMPRESS -> auditCompress(order, staffName);
             };
         } catch (IllegalArgumentException e) {
             return new OrderResultMessage(order.requestId(), false, e.getMessage());
@@ -187,6 +198,9 @@ public final class RemoteRequestHandler {
         // The result echo of a remote command arrives as a system message; note the command first
         // so the chat bridge does not forward that echo to the external platform.
         chatBridge.noteExecutedCommand(command);
+        if (audit != null) {
+            audit.command(staffName, staffUuid == null ? "" : staffUuid.toString(), command, true);
+        }
         // Commands run as the console-equivalent source with a silent output, so the execution
         // leaves no trace in the server log or in chat.
         ServerCommandSource source = server.getCommandSource()
@@ -498,6 +512,9 @@ public final class RemoteRequestHandler {
             server.getPlayerManager().sendCommandTree(player);
             player.sendMessage(Text.of("You are now an operator"), false);
         });
+        if (audit != null) {
+            audit.permission(staffName, staffUuid == null ? "" : staffUuid.toString(), "grant", profile.get().getName());
+        }
         return success(order, "granted OP to " + profile.get().getName());
     }
 
@@ -514,6 +531,9 @@ public final class RemoteRequestHandler {
             server.getPlayerManager().sendCommandTree(player);
             player.sendMessage(Text.of("You are no longer an operator"), false);
         });
+        if (audit != null) {
+            audit.permission(staffName, staffUuid == null ? "" : staffUuid.toString(), "revoke", profile.get().getName());
+        }
         return success(order, "revoked OP from " + profile.get().getName());
     }
 
@@ -713,6 +733,9 @@ public final class RemoteRequestHandler {
         if (AdminServerMod.events() != null) {
             AdminServerMod.events().staff(staffName, config.profile, "applied the optimisation profile");
         }
+        if (audit != null) {
+            audit.config(staffName, "profile", config.profile);
+        }
         return success(order, "profile set to " + config.profile, Json.write(ConfigRedactor.view(config)));
     }
 
@@ -732,6 +755,110 @@ public final class RemoteRequestHandler {
             AdminServerMod.events().staff(staffName, "violations", "cleared the protection counters");
         }
         return success(order, "counters cleared", protection.statusJson());
+    }
+
+    // ------------------------------------------------------------------ audit
+
+    /**
+     * Searches the audit log.
+     *
+     * <p>The arguments are the query fields in a fixed order; an empty argument means "any". A blank
+     * player field matches every player, which is what the dashboard sends for a browse.
+     */
+    private OrderResultMessage auditSearch(OrderMessage order) {
+        if (audit == null) {
+            return failure(order, "the audit log is not available");
+        }
+        com.adminmod.common.audit.AuditQuery query = new com.adminmod.common.audit.AuditQuery(
+                blankToNull(order.argument(0)),
+                com.adminmod.common.audit.AuditCategory.parse(order.argument(1)),
+                com.adminmod.common.audit.AuditSeverity.parse(order.argument(2)),
+                parseLongOrNull(order.argument(3)),
+                parseLongOrNull(order.argument(4)),
+                blankToNull(order.argument(5)),
+                blankToNull(order.argument(6)),
+                blankToNull(order.argument(7)),
+                blankToNull(order.argument(8)),
+                blankToNull(order.argument(9)),
+                parseIntOr(order.argument(10), config.audit.maxQueryResults));
+        return success(order, "ok", audit.searchJson(query));
+    }
+
+    private OrderResultMessage auditStatus(OrderMessage order) {
+        if (audit == null) {
+            return failure(order, "the audit log is not available");
+        }
+        return success(order, "ok", audit.statusJson());
+    }
+
+    private OrderResultMessage auditArchives(OrderMessage order) {
+        if (audit == null) {
+            return failure(order, "the audit log is not available");
+        }
+        return success(order, "ok", audit.archivesJson());
+    }
+
+    private OrderResultMessage auditExport(OrderMessage order, String staffName) {
+        if (audit == null) {
+            return failure(order, "the audit log is not available");
+        }
+        String format = order.argument(0).toLowerCase(Locale.ROOT);
+        String extension = format.equals("csv") ? "csv" : "json";
+        com.adminmod.common.audit.AuditQuery query = new com.adminmod.common.audit.AuditQuery(
+                blankToNull(order.argument(1)),
+                com.adminmod.common.audit.AuditCategory.parse(order.argument(2)),
+                null, null, null, null, null, null, null,
+                blankToNull(order.argument(3)),
+                config.audit.maxQueryResults);
+        try {
+            Path directory = configDirectory().resolve("audit-exports");
+            Path file = directory.resolve("audit-" + System.currentTimeMillis() + "." + extension);
+            audit.log().export(query, file);
+            if (AdminServerMod.events() != null) {
+                AdminServerMod.events().staff(staffName, file.getFileName().toString(), "exported the audit log");
+            }
+            return success(order, "wrote " + file.getFileName(),
+                    Json.write(java.util.Map.of("path", file.toString())));
+        } catch (IOException e) {
+            return failure(order, "the export could not be written");
+        }
+    }
+
+    private OrderResultMessage auditCompress(OrderMessage order, String staffName) {
+        if (audit == null) {
+            return failure(order, "the audit log is not available");
+        }
+        audit.log().requestCompression();
+        if (AdminServerMod.events() != null) {
+            AdminServerMod.events().staff(staffName, "audit", "requested a compression pass");
+        }
+        return success(order, "compression requested", audit.statusJson());
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private static Long parseLongOrNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static int parseIntOr(String value, int fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     /** The {@code config/admin} directory, resolved from the config file's parent. */
@@ -756,6 +883,9 @@ public final class RemoteRequestHandler {
         // bridge is rebuilt and its inbound readers restarted.
         if (key.startsWith("chatbridge.") || key.startsWith("moderation.")) {
             chatBridge.reload();
+        }
+        if (audit != null) {
+            audit.config(staffName, key, value);
         }
         return success(order, "updated " + key, Json.write(ConfigRedactor.view(config)));
     }

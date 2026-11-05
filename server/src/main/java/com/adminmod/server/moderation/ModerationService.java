@@ -24,10 +24,16 @@ public final class ModerationService {
 
     private final ModerationStore store;
     private final AdminConfig config;
+    private com.adminmod.server.audit.AuditManager audit;
 
     public ModerationService(ModerationStore store, AdminConfig config) {
         this.store = store;
         this.config = config;
+    }
+
+    /** Injected after construction so every recorded punishment is mirrored to the audit log. */
+    public void setAudit(com.adminmod.server.audit.AuditManager audit) {
+        this.audit = audit;
     }
 
     public ModerationStore store() {
@@ -45,8 +51,14 @@ public final class ModerationService {
             String staffName, String reason, long durationSeconds, String durationInput) {
         long now = System.currentTimeMillis();
         long expiresAt = durationSeconds <= 0L ? 0L : now + durationSeconds * 1000L;
-        return store.record(type, targetUuid, targetName, staffUuid, staffName,
+        Punishment punishment = store.record(type, targetUuid, targetName, staffUuid, staffName,
                 reason == null ? "" : reason.trim(), now, expiresAt, durationInput);
+        if (audit != null) {
+            audit.moderation(staffName == null ? "console" : staffName,
+                    staffUuid == null ? "" : staffUuid.toString(), type.name(), targetName,
+                    reason == null ? "" : reason.trim());
+        }
+        return punishment;
     }
 
     public int expireDue() {

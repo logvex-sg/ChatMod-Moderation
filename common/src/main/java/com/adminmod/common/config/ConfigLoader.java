@@ -31,7 +31,7 @@ import com.google.gson.JsonParser;
 public final class ConfigLoader {
 
     /** Schema version this build writes. Older files are upgraded to it on load. */
-    public static final int CURRENT_VERSION = 3;
+    public static final int CURRENT_VERSION = 4;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
@@ -237,6 +237,18 @@ public final class ConfigLoader {
         if (config.alerts == null) {
             config.alerts = new AdminConfig.Alerts();
         }
+        if (config.audit == null) {
+            config.audit = new AdminConfig.Audit();
+        }
+        if (config.audit.categories == null) {
+            config.audit.categories = new AdminConfig.Audit().categories;
+        }
+        if (config.storage == null) {
+            config.storage = new AdminConfig.Storage();
+        }
+        if (config.storage.algorithm == null || config.storage.algorithm.isBlank()) {
+            config.storage.algorithm = "zstd";
+        }
         if (config.profile == null || config.profile.isBlank()) {
             config.profile = "balanced";
         }
@@ -375,6 +387,40 @@ public final class ConfigLoader {
         clampInt(report, "alerts.queueWarnDepth", config.alerts.queueWarnDepth, 1, 1_000_000, v -> config.alerts.queueWarnDepth = v);
         clampLong(report, "alerts.alertCooldownSeconds", config.alerts.alertCooldownSeconds, 1L, 86_400L, v -> config.alerts.alertCooldownSeconds = v);
 
+        clampInt(report, "audit.retentionDays", config.audit.retentionDays, 1, 3_650, v -> config.audit.retentionDays = v);
+        clampInt(report, "audit.securityRetentionDays", config.audit.securityRetentionDays, 1, 36_500, v -> config.audit.securityRetentionDays = v);
+        clampInt(report, "audit.memoryBuffer", config.audit.memoryBuffer, 64, 1_000_000, v -> config.audit.memoryBuffer = v);
+        clampInt(report, "audit.queueCapacity", config.audit.queueCapacity, 64, 1_000_000, v -> config.audit.queueCapacity = v);
+        clampInt(report, "audit.maxQueryResults", config.audit.maxQueryResults, 1, 100_000, v -> config.audit.maxQueryResults = v);
+        clampInt(report, "audit.batchSize", config.audit.batchSize, 1, 65_536, v -> config.audit.batchSize = v);
+        clampInt(report, "audit.flushIntervalSeconds", config.audit.flushIntervalSeconds, 1, 3_600, v -> config.audit.flushIntervalSeconds = v);
+        if (config.audit.categories == null) {
+            config.audit.categories = new AdminConfig.Audit().categories;
+        } else {
+            config.audit.categories = normaliseCategories(config.audit.categories, report);
+        }
+
+        clampInt(report, "storage.level", config.storage.level, 0, 22, v -> config.storage.level = v);
+        clampInt(report, "storage.compressIntervalSeconds", config.storage.compressIntervalSeconds, 10, 86_400, v -> config.storage.compressIntervalSeconds = v);
+        clampInt(report, "storage.minArchiveAgeHours", config.storage.minArchiveAgeHours, 0, 8_760, v -> config.storage.minArchiveAgeHours = v);
+        clampInt(report, "storage.maxDecompressBytes", config.storage.maxDecompressBytes, 1_024, 1_073_741_824, v -> config.storage.maxDecompressBytes = v);
+        clampInt(report, "storage.workerThreads", config.storage.workerThreads, 1, 8, v -> config.storage.workerThreads = v);
+        clampInt(report, "storage.maxQueue", config.storage.maxQueue, 1, 1_000_000, v -> config.storage.maxQueue = v);
+        clampInt(report, "storage.batchSize", config.storage.batchSize, 1, 65_536, v -> config.storage.batchSize = v);
+        clampInt(report, "storage.cacheEntries", config.storage.cacheEntries, 0, 1_000_000, v -> config.storage.cacheEntries = v);
+        clampInt(report, "storage.cacheMaxBytes", config.storage.cacheMaxBytes, 0, 1_073_741_824, v -> config.storage.cacheMaxBytes = v);
+        clampLong(report, "storage.maxArchiveBytes", config.storage.maxArchiveBytes, 65_536L, 2_147_483_648L, v -> config.storage.maxArchiveBytes = v);
+        clampInt(report, "storage.maxArchives", config.storage.maxArchives, 1, 10_000, v -> config.storage.maxArchives = v);
+        clampLong(report, "storage.dedupeWindowMillis", config.storage.dedupeWindowMillis, 0L, 600_000L, v -> config.storage.dedupeWindowMillis = v);
+        clampDouble(report, "storage.pauseMsptThreshold", config.storage.pauseMsptThreshold, 1.0, 10_000.0, v -> config.storage.pauseMsptThreshold = v);
+        String algorithm = config.storage.algorithm == null ? null : config.storage.algorithm.trim().toLowerCase(Locale.ROOT);
+        if (algorithm == null || !java.util.Set.of("zstd", "gzip", "none").contains(algorithm)) {
+            report.add("storage.algorithm was not one of zstd/gzip/none; using zstd");
+            config.storage.algorithm = "zstd";
+        } else {
+            config.storage.algorithm = algorithm;
+        }
+
         if (config.logging.level == null || normaliseLevel(config.logging.level) == null) {
             report.add("logging.level was not one of off/error/warn/info/debug; using info");
             config.logging.level = "info";
@@ -417,6 +463,35 @@ public final class ConfigLoader {
         }
         return result;
     }
+
+    /**
+     * Upper-cases and de-duplicates the audit category names, dropping unknown ones.
+     *
+     * <p>A typo in a category name would otherwise silently disable that category, so an unknown
+     * name is reported and removed rather than kept.
+     */
+    private static List<String> normaliseCategories(List<String> values, ValidationReport report) {
+        List<String> result = new ArrayList<>();
+        for (String value : values) {
+            if (value == null || value.isBlank()) {
+                continue;
+            }
+            String name = value.trim().toUpperCase(Locale.ROOT);
+            if (!AUDIT_CATEGORIES.contains(name)) {
+                report.add("audit.categories contains unknown category '" + value + "'; it was ignored");
+                continue;
+            }
+            if (!result.contains(name)) {
+                result.add(name);
+            }
+        }
+        return result;
+    }
+
+    /** The category names the audit log accepts, mirrored from the audit model. */
+    private static final java.util.Set<String> AUDIT_CATEGORIES = java.util.Set.of(
+            "PLAYER", "MOVEMENT", "BLOCK", "CONTAINER", "COMMAND", "MODERATION", "PERMISSION",
+            "ANTICHEAT", "ANTIDUPE", "CONFIG", "SECURITY", "SERVER", "CHAT", "STAFF");
 
     private static void clampInt(ValidationReport report, String key, int value, int min, int max,
             java.util.function.IntConsumer setter) {

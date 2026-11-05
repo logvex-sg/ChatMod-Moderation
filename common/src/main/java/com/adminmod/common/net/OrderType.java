@@ -80,7 +80,17 @@ public enum OrderType {
     /** Protection tab: live anti-crash thresholds, counters and recent triggers. No arguments. */
     PROTECTION_STATUS(36, PermissionLevel.VIEW),
     /** Protection tab: clear the violation counters. No arguments. */
-    CLEAR_VIOLATIONS(37, PermissionLevel.OP_MANAGE);
+    CLEAR_VIOLATIONS(37, PermissionLevel.OP_MANAGE),
+    /** Audit tab: search the audit log. Arguments: player, category, minSeverity, from, to, item, block, pos, container, text, limit. */
+    AUDIT_SEARCH(38, PermissionLevel.VIEW),
+    /** Audit tab: audit store health and counters. No arguments. */
+    AUDIT_STATUS(39, PermissionLevel.VIEW),
+    /** Audit tab: list archive files. No arguments. */
+    AUDIT_ARCHIVES(40, PermissionLevel.VIEW),
+    /** Audit tab: write a search result to a file. Arguments: format, player, category, text. */
+    AUDIT_EXPORT(41, PermissionLevel.OP_MANAGE),
+    /** Audit tab: force a compression pass now. No arguments. */
+    AUDIT_COMPRESS(42, PermissionLevel.OP_MANAGE);
 
     /** Coarse capability required to run the order; refined by the server permission model. */
     public enum PermissionLevel {

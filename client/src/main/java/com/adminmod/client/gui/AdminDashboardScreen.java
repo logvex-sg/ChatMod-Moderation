@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.adminmod.client.gui.tab.AccessTab;
+import com.adminmod.client.gui.tab.AuditTab;
 import com.adminmod.client.gui.tab.ChatBridgeTab;
 import com.adminmod.client.gui.tab.ConsoleTab;
 import com.adminmod.client.gui.tab.DashboardTab;
@@ -60,6 +61,7 @@ public final class AdminDashboardScreen extends Screen {
             tabs.add(new LocalChatTab(this));
             tabs.add(new DiagnosticsTab(this));
             tabs.add(new ProtectionTab(this));
+            tabs.add(new AuditTab(this));
             tabs.add(new AccessTab(this));
             tabs.add(new SettingsTab(this));
             active = tabs.get(0);

@@ -83,8 +83,8 @@ The project ships as **two independent JARs** that share one wire protocol:
 
 ### Remote administration
 
-- Ten-tab dashboard in the client: **Console, Players, OP Management, Moderation, Chat Bridge,
-  Local Chat, Diagnostics, Protection, Access, Settings**.
+- Eleven-tab dashboard in the client: **Console, Players, OP Management, Moderation, Chat Bridge,
+  Local Chat, Diagnostics, Protection, Audit, Access, Settings**.
 - Server-side command execution through the mod, with no command echo forwarded to the bridge.
 - OP grant, revoke, status and list, applied immediately.
 - Password-vault authentication, owner authorization, replay protection and rate limiting.
@@ -102,6 +102,23 @@ The project ships as **two independent JARs** that share one wire protocol:
 - Connection-level limiter: a per-address accept rate, a concurrent-connection cap and temporary
   restrictions, all swept so a flood of spoofed addresses cannot grow the table.
 - A bounded violation log feeds the **Protection** dashboard tab.
+- Every trigger is also mirrored to the durable **Audit** log, so a review survives a restart.
+
+### Audit log
+
+- One append-only log records the events that matter for an investigation: joins and leaves, deaths
+  and respawns, block breaks, commands (by name only), moderation actions, permission changes,
+  configuration changes, protection triggers, server lifecycle and — when explicitly enabled —
+  public chat.
+- Records are written by a background thread through a bounded queue, so a stalled disk never stalls
+  the tick. The newest records stay uncompressed and quick to search; older ones are rolled into
+  compressed, checksummed archives on a background worker.
+- A **Audit** tab searches the log by free text, category, player and severity, shows the store's
+  real health (archive count, disk usage, compression ratio, dropped and deduplicated records),
+  exports a result to CSV or JSON, and can force a compression pass.
+- Two privacy rules are enforced in code, not left to callers: a command is recorded by its name
+  only (never its arguments, which routinely carry a password or a token), and chat is recorded only
+  when `audit.recordChat` is on.
 
 ### Performance profiles and diagnostics
 
@@ -110,6 +127,8 @@ The project ships as **two independent JARs** that share one wire protocol:
   legitimate client can produce, so a profile never silently disables protection.
 - A **Diagnostics** tab shows MSPT, TPS, ADMIN's own tick cost, heap use, queue depth, error
   counters and a rolling event history, and can export a credential-free JSON report.
+- The **Audit** tab reports the audit store's own health, so a stalled or failing writer is visible
+  rather than silent.
 - Every collection ADMIN keeps is bounded from configuration, and a periodic sweep drops expired
   records rather than waiting for the bound to evict them.
 
@@ -295,6 +314,8 @@ not mean scrolling past the whole schema and a malformed file cannot take the ot
 | `remoteadmin.json` | `remoteAdmin` |
 | `performance.json` | `performance`, `alerts` |
 | `protection.json` | `protection` |
+| `audit.json` | `audit` |
+| `storage.json` | `storage` |
 | `localchat.json` | proximity chat (written by the proximity service, not the split loader) |
 
 An existing single-file `admin-mod.json` is migrated once: it is read, split into the module files
@@ -511,6 +532,78 @@ left alone.
   Each line is broadcast in chat, so the chat bridge forwards it too.
 - `maintenance` shows `message` on join; with `kickNonOperators` true, anyone not on `allowList`
   and not holding `permissions.adminLevel` is disconnected.
+
+### Audit and storage
+
+`audit.json` controls what is recorded and how long it is kept:
+
+```json
+"audit": {
+  "enabled": true,
+  "categories": ["PLAYER", "MOVEMENT", "BLOCK", "CONTAINER", "COMMAND", "MODERATION",
+                 "PERMISSION", "ANTICHEAT", "ANTIDUPE", "CONFIG", "SECURITY", "SERVER"],
+  "recordChat": false,
+  "retentionDays": 30,
+  "securityRetentionDays": 365,
+  "memoryBuffer": 2048,
+  "queueCapacity": 16384,
+  "maxQueryResults": 1000,
+  "batchSize": 256,
+  "flushIntervalSeconds": 15,
+  "writeThrough": false
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `enabled` | Master switch. When off nothing is recorded. |
+| `categories` | Categories that are recorded. Removing one stops it being written — the supported way to cut volume without losing the rest. `CHAT` and `STAFF` are not in the default set. |
+| `recordChat` | Record public chat. Off by default: it is the most sensitive category. Private messages and commands are never chat. |
+| `retentionDays` | Age at which an ordinary event is dropped. |
+| `securityRetentionDays` | Age for a security event (moderation, permission, protection, authentication), which is exempt from the ordinary sweep. |
+| `memoryBuffer` / `queueCapacity` | Bounds on the in-memory buffer and the write queue. A full queue drops and counts rather than growing. |
+| `maxQueryResults` | Ceiling on how many events one search returns. |
+| `batchSize` / `flushIntervalSeconds` | How the in-memory buffer is flushed to the store. |
+| `writeThrough` | Write straight to the store instead of buffering. For a security-critical server at the cost of more disk writes. |
+
+`storage.json` controls compression and the archive:
+
+```json
+"storage": {
+  "enabled": true,
+  "algorithm": "zstd",
+  "level": 3,
+  "compressIntervalSeconds": 300,
+  "minArchiveAgeHours": 6,
+  "maxDecompressBytes": 67108864,
+  "workerThreads": 1,
+  "maxQueue": 4096,
+  "batchSize": 128,
+  "cacheEntries": 256,
+  "cacheMaxBytes": 33554432,
+  "maxArchiveBytes": 67108864,
+  "maxArchives": 64,
+  "deduplicate": true,
+  "dedupeWindowMillis": 250,
+  "pauseDuringLag": true,
+  "pauseMsptThreshold": 60.0
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `algorithm` | `zstd`, `gzip` or `none`. Zstandard is bundled in the server JAR; on a host where its native library cannot load the store transparently falls back to GZIP. |
+| `level` | Requested compression level, clamped to the chosen codec's range. |
+| `compressIntervalSeconds`, `minArchiveAgeHours` | How often a pass runs and how old a record must be before it is eligible. |
+| `maxArchiveBytes`, `maxArchives` | Rotation bounds; the oldest archive is removed first. |
+| `maxDecompressBytes` | Ceiling on a single archive's claimed decompressed size, so a bad header cannot exhaust memory. |
+| `workerThreads`, `maxQueue`, `batchSize` | Compression worker pool and its bounded work queue. |
+| `cacheEntries`, `cacheMaxBytes` | Bounds on the hot cache of decompressed records. |
+| `deduplicate`, `dedupeWindowMillis` | Store identical records once inside the window. |
+| `pauseDuringLag`, `pauseMsptThreshold` | Skip a pass while the server is lagging, and resume on the next interval. |
+
+The audit directory is created owner-only, like the credential folder. Records are checksummed, so
+a truncated or edited archive is detected and counted as corrupt rather than silently trusted.
 
 
 ---
@@ -736,6 +829,8 @@ Open the dashboard in-game with the configured key (default **`]`**).
 | **Moderation** | History, warnings, notes and punishment management. |
 | **Chat Bridge** | Connection status, active integrations, inbound reader state and recent delivery errors. |
 | **Local Chat** | Proximity settings: enable, radius, prefix, formats, staff bypass, sound, cooldown and per-dimension overrides. Reads live state from the server and writes changes back. |
+| **Protection** | Live anti-crash thresholds, counters and recent triggers. |
+| **Audit** | Search the durable audit log; store health, CSV/JSON export and a manual compression pass. |
 | **Access** | Pairing keys, paired-client list, live sessions, authentication history, credential rotation. |
 | **Settings** | Authentication state, connection details, redacted server settings and safe toggles. |
 
@@ -781,6 +876,23 @@ another.
   never trusted.
 
 There are no hidden backdoors and no administrative path that bypasses these checks.
+
+### Audit log
+
+The **Audit** tab is a search over the server's own durable log, not a second copy. It offers:
+
+- A free-text box matched case-insensitively against actor, subject, category, severity and detail
+  together, so a search for an item id, a block id or an address finds the event.
+- A category box (`player`, `block`, `container`, `command`, `moderation`, `permission`,
+  `anticheat`, `config`, `security`, `server`, `chat`) and a player box (name or UUID).
+- A store card with the live archive count, disk usage, compression ratio and the dropped and
+  deduplicated record counters, so a failing writer is visible.
+- **Export CSV** / **Export JSON**, which write the current search to `config/admin/audit-exports/`
+  on the server, and **Compress now**, which forces a pass.
+
+A command is stored by its name only. `detailValue("command")` returns e.g. `login` for
+`/login hunter2`; the arguments are dropped before the record is built, so no secret can reach disk
+through the audit path. The audit log never carries a private message, a credential or a token.
 
 ---
 
@@ -837,6 +949,9 @@ The suite covers, among other things:
 - Modular configuration: file creation, per-module round trips, migration of the legacy file and
   quarantine of a malformed one; and the optimisation profiles.
 - Bounded cache behaviour: TTL expiry, LRU eviction, sweeping and hit accounting.
+- Audit and storage: category and severity routing, the command-name-only rule, the chat opt-in,
+  the violation-log mirror, query matching, retention windows, the compressed archive round trip
+  (including the corruption path), deduplication and the store's health counters.
 - **End-to-end Discord Gateway test** against a real local WebSocket server, which exercises the
   handshake, IDENTIFY frame and dispatch parsing.
 - **End-to-end webhook delivery** against a real loopback HTTP server: a public chat message is
@@ -895,16 +1010,33 @@ with the bypass on always hears it, so test with a non-staff account.
 Set `localChat.forwardToBridge` to true. The channel is available to the format as `%channel%` and
 `%channel_label%`; ordinary public chat has an empty label.
 
+**The Audit tab shows no events.**
+Check `audit.enabled` is true and that the category you are looking for is still listed in
+`audit.categories`. A blank search box browses the most recent events; a category that was removed
+from the list is not recorded at all. If the store card shows a rising `dropped` counter the write
+queue is full — raise `audit.queueCapacity` or lower `storage.compressIntervalSeconds` so archives
+are written sooner.
+
+**The audit log falls back to GZIP.**
+The `algorithmAvailable` field on the store card is false. The Zstandard native library could not
+load on this host, so the store is using the always-present GZIP codec. This is safe; set
+`storage.algorithm` to `"gzip"` to silence the notice.
+
+**A command I ran does not appear in the audit log.**
+Only the command name is recorded, and only when `COMMAND` is an enabled category. Arguments are
+never written, by design.
+
 ---
 
 ## 19. Project layout
 
 ```
 common/         config model, wire format, packets, crypto helpers, proximity rules,
-                anti-crash protection, bounded caches, diagnostics primitives
+                anti-crash protection, bounded caches, diagnostics primitives,
+                audit log and compressed storage
 integrations/   Discord, Matrix and webhook providers, inbound readers, dispatcher
 server/         Fabric dedicated-server mod: moderation, chat bridge, proximity delivery,
-                protection mixins, performance monitor, remote admin endpoint
+                protection mixins, performance monitor, audit manager, remote admin endpoint
 client/         Fabric client mod: dashboard GUI and networking
 buildSrc/       build helpers (jar scanning)
 ```
