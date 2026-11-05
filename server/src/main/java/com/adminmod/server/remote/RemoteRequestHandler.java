@@ -72,6 +72,7 @@ public final class RemoteRequestHandler {
     private com.adminmod.server.diagnostics.DiagnosticsService diagnostics;
     private com.adminmod.common.protection.ProtectionManager protection;
     private com.adminmod.server.audit.AuditManager audit;
+    private com.adminmod.server.settings.SettingsService settings;
 
     public RemoteRequestHandler(MinecraftServer server, AdminConfig config, Path configPath,
             PermissionService permissions, ModerationService moderation, ChatBridgeService chatBridge,
@@ -114,6 +115,11 @@ public final class RemoteRequestHandler {
     /** Injected after construction so the audit tab can read and search the audit log. */
     public void setAudit(com.adminmod.server.audit.AuditManager audit) {
         this.audit = audit;
+    }
+
+    /** Injected after construction so the config and profile tabs can read and write settings. */
+    public void setSettings(com.adminmod.server.settings.SettingsService settings) {
+        this.settings = settings;
     }
 
     /** Live permission level of a connected player: 4 for operators, otherwise 0. */
@@ -176,6 +182,23 @@ public final class RemoteRequestHandler {
                 case AUDIT_ARCHIVES -> auditArchives(order);
                 case AUDIT_EXPORT -> auditExport(order, staffName);
                 case AUDIT_COMPRESS -> auditCompress(order, staffName);
+                case SETTINGS_CATALOG -> settingsCatalog(order);
+                case SETTINGS_UPDATE -> settingsUpdate(order, staffUuid, staffName);
+                case SETTINGS_UPDATE_BATCH -> settingsUpdateBatch(order, staffUuid, staffName);
+                case SETTINGS_RESET -> settingsReset(order, staffUuid, staffName);
+                case SETTINGS_HISTORY -> settingsHistory(order);
+                case SETTINGS_ROLLBACK -> settingsRollback(order, staffUuid, staffName);
+                case SETTINGS_DIAGNOSTICS -> settingsDiagnostics(order);
+                case PROFILE_LIST -> profileList(order);
+                case PROFILE_PREVIEW -> profilePreview(order);
+                case PROFILE_APPLY -> profileApply(order, staffUuid, staffName);
+                case PROFILE_CREATE -> profileCreate(order, staffName);
+                case PROFILE_RENAME -> profileRename(order, staffName);
+                case PROFILE_DUPLICATE -> profileDuplicate(order, staffName);
+                case PROFILE_DELETE -> profileDelete(order, staffName);
+                case PROFILE_EXPORT -> profileExport(order);
+                case PROFILE_IMPORT -> profileImport(order, staffUuid, staffName);
+                case SETTINGS_BACKUP -> settingsBackup(order, staffName);
             };
         } catch (IllegalArgumentException e) {
             return new OrderResultMessage(order.requestId(), false, e.getMessage());
@@ -837,6 +860,286 @@ public final class RemoteRequestHandler {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    // ------------------------------------------------------------------ unified settings
+
+    private OrderResultMessage settingsCatalog(OrderMessage order) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        return success(order, "ok", settings.catalogJson());
+    }
+
+    private OrderResultMessage settingsUpdate(OrderMessage order, UUID staffUuid, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        String path = order.argument(0).trim();
+        String value = order.argument(1);
+        com.adminmod.server.settings.SettingsService.Result result = settings.update(staffName, path, value);
+        if (!result.success()) {
+            return failure(order, result.message());
+        }
+        auditConfig(staffName, path, value);
+        JsonObject root = new JsonObject();
+        root.addProperty("path", path);
+        root.addProperty("value", com.adminmod.common.settings.SettingsBinder.read(config, path));
+        root.add("catalog", com.adminmod.common.model.Json.parseObject(settings.catalogJson()));
+        addWarnings(root, result.warnings());
+        return success(order, result.message(), Json.write(root));
+    }
+
+    private OrderResultMessage settingsUpdateBatch(OrderMessage order, UUID staffUuid, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        JsonObject updates = com.adminmod.common.model.Json.parseObject(order.argument(0));
+        java.util.Map<String, String> map = new java.util.LinkedHashMap<>();
+        for (String key : updates.keySet()) {
+            map.put(key, updates.get(key).getAsString());
+        }
+        com.adminmod.server.settings.SettingsService.Result result = settings.updateBatch(staffName, map);
+        if (!result.success()) {
+            return failureWithWarnings(order, result.message(), result.warnings());
+        }
+        auditConfig(staffName, "batch", map.size() + " setting(s)");
+        JsonObject root = new JsonObject();
+        root.add("catalog", com.adminmod.common.model.Json.parseObject(settings.catalogJson()));
+        addWarnings(root, result.warnings());
+        return success(order, result.message(), Json.write(root));
+    }
+
+    private OrderResultMessage settingsReset(OrderMessage order, UUID staffUuid, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        String scope = order.argument(0).toLowerCase(Locale.ROOT);
+        String name = order.argument(1);
+        com.adminmod.server.settings.SettingsService.Result result;
+        switch (scope) {
+            case "setting" -> result = settings.resetSetting(staffName, name);
+            case "category" -> {
+                com.adminmod.common.settings.SettingCategory category = parseCategory(name);
+                if (category == null) {
+                    return failure(order, "unknown category: " + name);
+                }
+                result = settings.resetCategory(staffName, category);
+            }
+            case "profile" -> result = settings.applyProfile(staffName, name);
+            default -> {
+                return failure(order, "unknown reset scope: " + scope);
+            }
+        }
+        if (!result.success()) {
+            return failureWithWarnings(order, result.message(), result.warnings());
+        }
+        auditConfig(staffName, "reset/" + scope, name);
+        JsonObject root = new JsonObject();
+        root.add("catalog", com.adminmod.common.model.Json.parseObject(settings.catalogJson()));
+        addWarnings(root, result.warnings());
+        return success(order, result.message(), Json.write(root));
+    }
+
+    private OrderResultMessage settingsHistory(OrderMessage order) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        return success(order, "ok", settings.historyJson());
+    }
+
+    private OrderResultMessage settingsRollback(OrderMessage order, UUID staffUuid, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        com.adminmod.server.settings.SettingsService.Result result = settings.rollback(staffName);
+        if (!result.success()) {
+            return failure(order, result.message());
+        }
+        auditConfig(staffName, "rollback", result.message());
+        JsonObject root = new JsonObject();
+        root.add("catalog", com.adminmod.common.model.Json.parseObject(settings.catalogJson()));
+        addWarnings(root, result.warnings());
+        return success(order, result.message(), Json.write(root));
+    }
+
+    private OrderResultMessage settingsDiagnostics(OrderMessage order) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        return success(order, "ok", settings.diagnosticsJson());
+    }
+
+    private OrderResultMessage settingsBackup(OrderMessage order, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        try {
+            java.nio.file.Path folder = settings.backups().snapshot(configDirectory(), "manual");
+            if (folder == null) {
+                return failure(order, "there was nothing to back up");
+            }
+            auditConfig(staffName, "backup", folder.getFileName().toString());
+            JsonObject root = new JsonObject();
+            root.addProperty("path", folder.getFileName().toString());
+            return success(order, "backup written", Json.write(root));
+        } catch (IOException e) {
+            return failure(order, "the backup could not be written");
+        }
+    }
+
+    // ------------------------------------------------------------------ profiles
+
+    private OrderResultMessage profileList(OrderMessage order) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        return success(order, "ok", settings.profilesJson());
+    }
+
+    private OrderResultMessage profilePreview(OrderMessage order) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        return success(order, "ok", settings.preview(order.argument(0).trim()));
+    }
+
+    private OrderResultMessage profileApply(OrderMessage order, UUID staffUuid, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        String name = order.argument(0).trim();
+        com.adminmod.server.settings.SettingsService.Result result = settings.applyProfile(staffName, name);
+        if (!result.success()) {
+            return failure(order, result.message());
+        }
+        auditConfig(staffName, "profile", name);
+        JsonObject root = new JsonObject();
+        root.add("catalog", com.adminmod.common.model.Json.parseObject(settings.catalogJson()));
+        root.add("profiles", com.adminmod.common.model.Json.parseObject(settings.profilesJson()));
+        addWarnings(root, result.warnings());
+        return success(order, result.message(), Json.write(root));
+    }
+
+    private OrderResultMessage profileCreate(OrderMessage order, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        com.adminmod.server.settings.SettingsService.Result result =
+                settings.createProfile(order.argument(0).trim(), order.argument(1));
+        return profileResult(order, result, staffName, "create");
+    }
+
+    private OrderResultMessage profileRename(OrderMessage order, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        com.adminmod.server.settings.SettingsService.Result result =
+                settings.renameProfile(order.argument(0).trim(), order.argument(1).trim());
+        return profileResult(order, result, staffName, "rename");
+    }
+
+    private OrderResultMessage profileDuplicate(OrderMessage order, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        com.adminmod.server.settings.SettingsService.Result result =
+                settings.duplicateProfile(order.argument(0).trim(), order.argument(1).trim());
+        return profileResult(order, result, staffName, "duplicate");
+    }
+
+    private OrderResultMessage profileDelete(OrderMessage order, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        com.adminmod.server.settings.SettingsService.Result result =
+                settings.deleteProfile(order.argument(0).trim());
+        return profileResult(order, result, staffName, "delete");
+    }
+
+    private OrderResultMessage profileExport(OrderMessage order) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        String json = settings.exportProfile(order.argument(0).trim());
+        if (json.isBlank()) {
+            return failure(order, "no such profile: " + order.argument(0));
+        }
+        JsonObject root = new JsonObject();
+        root.addProperty("json", json);
+        return success(order, "ok", Json.write(root));
+    }
+
+    private OrderResultMessage profileImport(OrderMessage order, UUID staffUuid, String staffName) {
+        if (settings == null) {
+            return failure(order, "the settings manager is not available");
+        }
+        boolean applyNow = Boolean.parseBoolean(order.argument(1));
+        com.adminmod.server.settings.SettingsService.Result result =
+                settings.importProfile(staffName, order.argument(0), applyNow);
+        if (!result.success()) {
+            return failure(order, result.message());
+        }
+        auditConfig(staffName, "import", applyNow ? "applied" : "stored");
+        JsonObject root = new JsonObject();
+        root.add("catalog", com.adminmod.common.model.Json.parseObject(settings.catalogJson()));
+        root.add("profiles", com.adminmod.common.model.Json.parseObject(settings.profilesJson()));
+        addWarnings(root, result.warnings());
+        return success(order, result.message(), Json.write(root));
+    }
+
+    private OrderResultMessage profileResult(OrderMessage order,
+            com.adminmod.server.settings.SettingsService.Result result, String staffName, String action) {
+        if (!result.success()) {
+            return failure(order, result.message());
+        }
+        auditConfig(staffName, "profile-" + action, result.message());
+        JsonObject root = new JsonObject();
+        root.add("profiles", com.adminmod.common.model.Json.parseObject(settings.profilesJson()));
+        addWarnings(root, result.warnings());
+        return success(order, result.message(), Json.write(root));
+    }
+
+    private static com.adminmod.common.settings.SettingCategory parseCategory(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        try {
+            return com.adminmod.common.settings.SettingCategory.valueOf(name.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static void addWarnings(JsonObject root, java.util.List<String> warnings) {
+        if (warnings == null || warnings.isEmpty()) {
+            return;
+        }
+        com.google.gson.JsonArray array = new com.google.gson.JsonArray();
+        for (String warning : warnings) {
+            array.add(warning);
+        }
+        root.add("warnings", array);
+    }
+
+    private OrderResultMessage failureWithWarnings(OrderMessage order, String message,
+            java.util.List<String> warnings) {
+        if (warnings == null || warnings.isEmpty()) {
+            return failure(order, message);
+        }
+        return failure(order, message + " (" + String.join("; ", warnings) + ")");
+    }
+
+    /** Records a configuration change in the audit log, never the value of a secret. */
+    private void auditConfig(String staffName, String path, String value) {
+        if (audit == null) {
+            return;
+        }
+        com.adminmod.common.settings.SettingSpec spec = settings == null ? null
+                : settings.registry().byPath(path);
+        String detail = spec != null && spec.secret() ? path + " (secret; value not recorded)"
+                : path + " = " + value;
+        audit.config(staffName, path, detail);
     }
 
     private static Long parseLongOrNull(String value) {

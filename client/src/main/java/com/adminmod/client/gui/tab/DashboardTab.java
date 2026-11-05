@@ -94,6 +94,14 @@ public abstract class DashboardTab {
         return false;
     }
 
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
+        return false;
+    }
+
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        return false;
+    }
+
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontal, double vertical) {
         return false;
     }

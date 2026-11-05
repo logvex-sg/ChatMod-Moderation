@@ -31,7 +31,7 @@ import com.google.gson.JsonParser;
 public final class ConfigLoader {
 
     /** Schema version this build writes. Older files are upgraded to it on load. */
-    public static final int CURRENT_VERSION = 4;
+    public static final int CURRENT_VERSION = 5;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
@@ -249,6 +249,18 @@ public final class ConfigLoader {
         if (config.storage.algorithm == null || config.storage.algorithm.isBlank()) {
             config.storage.algorithm = "zstd";
         }
+        if (config.backups == null) {
+            config.backups = new AdminConfig.Backups();
+        }
+        if (config.automation == null) {
+            config.automation = new AdminConfig.Automation();
+        }
+        if (config.notifications == null) {
+            config.notifications = new AdminConfig.Notifications();
+        }
+        if (config.notifications.minSeverity == null || config.notifications.minSeverity.isBlank()) {
+            config.notifications.minSeverity = "warning";
+        }
         if (config.profile == null || config.profile.isBlank()) {
             config.profile = "balanced";
         }
@@ -428,6 +440,17 @@ public final class ConfigLoader {
             config.logging.level = normaliseLevel(config.logging.level);
         }
 
+        clampInt(report, "backups.intervalHours", config.backups.intervalHours, 0, 720, v -> config.backups.intervalHours = v);
+        clampInt(report, "backups.maxBackups", config.backups.maxBackups, 1, 1_000, v -> config.backups.maxBackups = v);
+        clampInt(report, "automation.autoCleanupIntervalMinutes", config.automation.autoCleanupIntervalMinutes, 1, 10_080, v -> config.automation.autoCleanupIntervalMinutes = v);
+        clampLong(report, "notifications.quietSeconds", config.notifications.quietSeconds, 0L, 86_400L, v -> config.notifications.quietSeconds = v);
+        if (config.notifications.minSeverity == null || normaliseSeverity(config.notifications.minSeverity) == null) {
+            report.add("notifications.minSeverity was not one of info/notice/warning/error/critical; using warning");
+            config.notifications.minSeverity = "warning";
+        } else {
+            config.notifications.minSeverity = normaliseSeverity(config.notifications.minSeverity);
+        }
+
         // Drop blank keyword and template entries so a stray empty line cannot block everything.
         config.chatBridge.blockedKeywords = withoutBlanks(config.chatBridge.blockedKeywords);
         List<AdminConfig.PunishmentTemplate> templates = new ArrayList<>();
@@ -450,6 +473,18 @@ public final class ConfigLoader {
         String value = level.trim().toLowerCase(Locale.ROOT);
         return switch (value) {
             case "off", "error", "warn", "info", "debug" -> value;
+            default -> null;
+        };
+    }
+
+    /** @return the canonical lower-case severity name, or {@code null} when it is not recognised. */
+    public static String normaliseSeverity(String severity) {
+        if (severity == null) {
+            return null;
+        }
+        String value = severity.trim().toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "info", "notice", "warning", "error", "critical" -> value;
             default -> null;
         };
     }

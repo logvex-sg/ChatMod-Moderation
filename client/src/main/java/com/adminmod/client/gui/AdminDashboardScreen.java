@@ -6,6 +6,7 @@ import java.util.List;
 import com.adminmod.client.gui.tab.AccessTab;
 import com.adminmod.client.gui.tab.AuditTab;
 import com.adminmod.client.gui.tab.ChatBridgeTab;
+import com.adminmod.client.gui.tab.ConfigTab;
 import com.adminmod.client.gui.tab.ConsoleTab;
 import com.adminmod.client.gui.tab.DashboardTab;
 import com.adminmod.client.gui.tab.DiagnosticsTab;
@@ -13,6 +14,7 @@ import com.adminmod.client.gui.tab.LocalChatTab;
 import com.adminmod.client.gui.tab.ModerationTab;
 import com.adminmod.client.gui.tab.OpTab;
 import com.adminmod.client.gui.tab.PlayersTab;
+import com.adminmod.client.gui.tab.ProfilesTab;
 import com.adminmod.client.gui.tab.ProtectionTab;
 import com.adminmod.client.gui.tab.SettingsTab;
 import com.adminmod.client.net.AdminClientNetworking;
@@ -20,6 +22,7 @@ import com.adminmod.client.net.AdminClientNetworking;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
+import net.minecraft.util.math.MathHelper;
 
 /**
  * The remote administration dashboard.
@@ -40,6 +43,10 @@ public final class AdminDashboardScreen extends Screen {
     private final List<DashboardTab> tabs = new ArrayList<>();
     private DashboardTab active;
     private int activeIndex;
+    private int sidebarScroll;
+
+    private static final int TAB_ROW_HEIGHT = 28;
+    private static final int TAB_TOP = 54;
 
     private final List<Toast> toasts = new ArrayList<>();
 
@@ -63,6 +70,8 @@ public final class AdminDashboardScreen extends Screen {
             tabs.add(new ProtectionTab(this));
             tabs.add(new AuditTab(this));
             tabs.add(new AccessTab(this));
+            tabs.add(new ConfigTab(this));
+            tabs.add(new ProfilesTab(this));
             tabs.add(new SettingsTab(this));
             active = tabs.get(0);
         }
@@ -141,10 +150,15 @@ public final class AdminDashboardScreen extends Screen {
     }
 
     private void renderTabStrip(DrawContext context, int mouseX, int mouseY) {
-        int ty = 54;
+        int ty = TAB_TOP - sidebarScroll;
         for (int i = 0; i < tabs.size(); i++) {
             DashboardTab tab = tabs.get(i);
-            boolean hovered = mouseX >= 8 && mouseX < SIDEBAR_WIDTH - 8 && mouseY >= ty && mouseY < ty + 26;
+            if (ty + TAB_ROW_HEIGHT < TAB_TOP || ty > height - 24) {
+                ty += TAB_ROW_HEIGHT;
+                continue;
+            }
+            boolean hovered = mouseX >= 8 && mouseX < SIDEBAR_WIDTH - 8 && mouseY >= ty
+                    && mouseY < ty + 26 && mouseY >= TAB_TOP;
             boolean selected = i == activeIndex;
             if (selected) {
                 context.fill(8, ty, SIDEBAR_WIDTH - 8, ty + 26, Theme.TAB_ACTIVE);
@@ -154,7 +168,18 @@ public final class AdminDashboardScreen extends Screen {
             }
             context.drawTextWithShadow(textRenderer, tab.title(), 20, ty + 9,
                     selected ? Theme.TEXT : hovered ? Theme.TEXT_DIM : Theme.TEXT_MUTED);
-            ty += 28;
+            ty += TAB_ROW_HEIGHT;
+        }
+        // A scrollbar appears only when the strip is taller than the sidebar.
+        int totalHeight = tabs.size() * TAB_ROW_HEIGHT;
+        int available = height - 24 - TAB_TOP;
+        if (totalHeight > available) {
+            int trackX = SIDEBAR_WIDTH - 4;
+            int thumbHeight = Math.max(20, available * available / totalHeight);
+            int maxScroll = totalHeight - available;
+            int thumbY = TAB_TOP + (available - thumbHeight) * sidebarScroll / Math.max(1, maxScroll);
+            context.fill(trackX, TAB_TOP, trackX + 2, height - 24, Theme.BORDER);
+            context.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight, Theme.TEXT_MUTED);
         }
     }
 
@@ -217,11 +242,14 @@ public final class AdminDashboardScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (button == 0 && mouseX >= 8 && mouseX < SIDEBAR_WIDTH - 8 && mouseY >= 54) {
-            int index = (int) ((mouseY - 54) / 28);
-            if (index >= 0 && index < tabs.size() && mouseY - 54 - index * 28 < 26) {
-                selectTab(index);
-                return true;
+        if (button == 0 && mouseX >= 8 && mouseX < SIDEBAR_WIDTH - 8 && mouseY >= TAB_TOP) {
+            int index = (int) ((mouseY - TAB_TOP + sidebarScroll) / TAB_ROW_HEIGHT);
+            if (index >= 0 && index < tabs.size()) {
+                int rowTop = TAB_TOP + index * TAB_ROW_HEIGHT - sidebarScroll;
+                if (mouseY >= rowTop && mouseY < rowTop + 26) {
+                    selectTab(index);
+                    return true;
+                }
             }
         }
         if (active.mouseClicked(mouseX, mouseY, button)) {
@@ -231,7 +259,30 @@ public final class AdminDashboardScreen extends Screen {
     }
 
     @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
+        if (active.mouseDragged(mouseX, mouseY, button, deltaX, deltaY)) {
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (active.mouseReleased(mouseX, mouseY, button)) {
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontal, double vertical) {
+        if (mouseX < SIDEBAR_WIDTH) {
+            int totalHeight = tabs.size() * TAB_ROW_HEIGHT;
+            int available = height - 24 - TAB_TOP;
+            int maxScroll = Math.max(0, totalHeight - available);
+            sidebarScroll = MathHelper.clamp(sidebarScroll - (int) (vertical * TAB_ROW_HEIGHT), 0, maxScroll);
+            return true;
+        }
         if (active.mouseScrolled(mouseX, mouseY, horizontal, vertical)) {
             return true;
         }

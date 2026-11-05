@@ -42,6 +42,9 @@ public final class AdminConfig {
     public Logging logging = new Logging();
     public Audit audit = new Audit();
     public Storage storage = new Storage();
+    public Backups backups = new Backups();
+    public Automation automation = new Automation();
+    public Notifications notifications = new Notifications();
 
     public static final class ChatBridge {
         public boolean enabled = true;
@@ -676,5 +679,71 @@ public final class AdminConfig {
         public boolean pauseDuringLag = true;
         /** MSPT above which a running compression pass pauses. */
         public double pauseMsptThreshold = 60.0;
+    }
+
+    /**
+     * Configuration backup settings.
+     *
+     * <p>ADMIN rewrites the configuration files on migration and on a bulk change, and a rewrite is
+     * the one moment a hand-edited file could be lost. A backup is taken first so that never
+     * happens silently, and an optional schedule keeps a recent copy on hand regardless.
+     */
+    public static final class Backups {
+        /** Master switch for automatic configuration backups. */
+        public boolean enabled = true;
+        /** Hours between scheduled backups. Zero disables the schedule. */
+        public int intervalHours = 24;
+        /** Most backup files to keep before the oldest is removed. */
+        public int maxBackups = 20;
+        /** Copy the configuration aside before an upgrade rewrites it. */
+        public boolean backupBeforeMigration = true;
+        /** Copy the configuration aside before a profile import is applied. */
+        public boolean backupBeforeImport = true;
+    }
+
+    /**
+     * Scheduled maintenance tasks.
+     *
+     * <p>These are the jobs that would otherwise have to be run by hand: sweeping expired data,
+     * compressing old records and taking a backup on start. They run on the server tick scheduler,
+     * so they are never on a request thread.
+     */
+    public static final class Automation {
+        /** Master switch for the scheduled tasks. */
+        public boolean enabled = true;
+        /** Sweep expired data on the cleanup interval. */
+        public boolean autoCleanupEnabled = true;
+        /** Minutes between two cleanup sweeps. */
+        public int autoCleanupIntervalMinutes = 60;
+        /** Take a configuration backup once on server start. */
+        public boolean autoBackupOnStart = false;
+        /** Run the audit store's compression pass on its interval. */
+        public boolean autoCompressEnabled = true;
+        /** Warn in the dashboard when a change needs a restart to take effect. */
+        public boolean restartRequiredNotice = true;
+    }
+
+    /**
+     * Where ADMIN sends its own alerts.
+     *
+     * <p>These are separate from the chat bridge: the bridge forwards player chat, while a
+     * notification reports something ADMIN itself noticed (a protection trigger, a moderation
+     * action, an authentication failure, a performance alert).
+     */
+    public static final class Notifications {
+        /** Master switch for notifications. */
+        public boolean enabled = false;
+        public boolean onProtectionTrigger = true;
+        public boolean onModerationAction = true;
+        public boolean onAuthFailure = true;
+        public boolean onPerformanceAlert = true;
+        /** Only notify for events at or above this severity: info, notice, warning, error, critical. */
+        public String minSeverity = "warning";
+        /** Show notifications in Minecraft chat for online staff. */
+        public boolean toChat = true;
+        /** Send notifications to the chat bridge's external platform. */
+        public boolean toBridge = false;
+        /** Minimum gap between two notifications of the same kind, in seconds. */
+        public long quietSeconds = 60L;
     }
 }

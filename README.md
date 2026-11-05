@@ -33,6 +33,7 @@ The project ships as **two independent JARs** that share one wire protocol:
 17. [Testing](#17-testing)
 18. [Troubleshooting](#18-troubleshooting)
 19. [Project layout](#19-project-layout)
+20. [Documentation](#20-documentation)
 
 ---
 
@@ -316,6 +317,9 @@ not mean scrolling past the whole schema and a malformed file cannot take the ot
 | `protection.json` | `protection` |
 | `audit.json` | `audit` |
 | `storage.json` | `storage` |
+| `backups.json` | `backups` |
+| `automation.json` | `automation` |
+| `notifications.json` | `notifications` |
 | `localchat.json` | proximity chat (written by the proximity service, not the split loader) |
 
 An existing single-file `admin-mod.json` is migrated once: it is read, split into the module files
@@ -605,6 +609,52 @@ left alone.
 The audit directory is created owner-only, like the credential folder. Records are checksummed, so
 a truncated or edited archive is detected and counted as corrupt rather than silently trusted.
 
+### Unified settings screen, profiles and import/export
+
+Everything above is also editable from the client's **Config** tab, which is built from a central
+catalogue rather than a hand-written form. Each setting is described once — category, control type,
+range, unit, whether it is advanced, dangerous, secret or restart-required, and a plain-language
+description — and the same description drives the editor, the search box, the tooltips and the
+diagnostics page. A setting that is missing a catalogue entry still works: the registry adds a
+conservative placeholder and records a note so the gap is visible rather than silent.
+
+| Catalogue concept | Effect |
+| --- | --- |
+| Category | Which group the setting appears under in the sidebar. |
+| Type | `BOOLEAN`, `STRING`, `INTEGER`, `LONG`, `DECIMAL`, `ENUM`, `COLOR`, `STRING_LIST` — picks the control. |
+| Range / step / options | Clamp and constrain the value; the slider and the spinner obey them. |
+| Secret | The value is never sent to a client, only whether it is set. Changing one is a deliberate action. |
+| Restart required | Applying the value warns that it takes effect after a restart. |
+| Depends on | Another setting that must be on for this one to matter; shown as a hint. |
+| Dangerous | Requires an explicit confirmation before it may be changed. |
+
+A change is applied atomically: a batch is validated in full, written into a scratch copy, and only
+committed when every value is accepted. If one value is rejected the whole batch is refused and
+nothing is written, so the configuration is never left half-updated. Every accepted change is
+recorded with the actor's name and the previous value, so **Rollback** in the Config tab restores
+the last change, and the history is visible in the same place.
+
+**Profiles** capture a named set of settings and can be applied, exported to JSON or imported from
+one. Exports never contain credential material: a secret is written as a flag, not a value, so a
+shared profile cannot leak a webhook URL or an access token. Built-in presets (`performance`,
+`balanced`, `maximum`, plus the themed presets) are always available and cannot be deleted; custom
+profiles live in `config/admin/profiles.json`. An import can be applied immediately or stored for
+later, and a pre-import backup is taken first when `backups.backupBeforeImport` is on.
+
+The **Backups**, **Automation** and **Notifications** sections are part of the same catalogue:
+
+- `backups` — how many snapshots to keep, where they go and whether to take one before a migration,
+  an import or a profile apply.
+- `automation` — whether scheduled maintenance runs, the cleanup interval, and whether to back up
+  and compress on start.
+- `notifications` — which events raise an ADMIN alert, the minimum severity, whether alerts go to
+  chat or to the bridge, and the quiet period between repeats.
+
+A configuration that has drifted (a value out of range, a required companion setting left off, a
+secret that is referenced but blank) is reported by the **Diagnostics** tab as findings with a
+severity, a category and the path of the setting to fix — the same analysis the server logs at
+start-up.
+
 
 ---
 
@@ -832,6 +882,8 @@ Open the dashboard in-game with the configured key (default **`]`**).
 | **Protection** | Live anti-crash thresholds, counters and recent triggers. |
 | **Audit** | Search the durable audit log; store health, CSV/JSON export and a manual compression pass. |
 | **Access** | Pairing keys, paired-client list, live sessions, authentication history, credential rotation. |
+| **Config** | The unified settings editor: every setting grouped by category, searchable, with the control that fits its type, favourites and a preview of pending changes. Apply, cancel or reset a category; roll back the last change. |
+| **Profiles** | Capture the current settings as a named profile, preview what applying one would change, apply, export to JSON or import from one. Built-in presets are listed alongside custom profiles. |
 | **Settings** | Authentication state, connection details, redacted server settings and safe toggles. |
 
 ### Protocol
@@ -949,6 +1001,12 @@ The suite covers, among other things:
 - Modular configuration: file creation, per-module round trips, migration of the legacy file and
   quarantine of a malformed one; and the optimisation profiles.
 - Bounded cache behaviour: TTL expiry, LRU eviction, sweeping and hit accounting.
+- Unified settings: the catalogue describes every model field and no spec points at a field that
+  does not exist; the binder reads and writes every leaf, including colour and list values; the
+  validator clamps and rejects; a profile round-trips through the codec; a secret is never written
+  into an export; the diagnostics analysis finds a broken configuration and passes a healthy one;
+  and the service applies a batch atomically, refuses a batch with one bad value, rolls back, and
+  applies a preset.
 - Audit and storage: category and severity routing, the command-name-only rule, the chat opt-in,
   the violation-log mirror, query matching, retention windows, the compressed archive round trip
   (including the corruption path), deduplication and the store's health counters.
@@ -1040,6 +1098,19 @@ server/         Fabric dedicated-server mod: moderation, chat bridge, proximity 
 client/         Fabric client mod: dashboard GUI and networking
 buildSrc/       build helpers (jar scanning)
 ```
+
+---
+
+## 20. Documentation
+
+| Guide | Covers |
+| --- | --- |
+| [INSTALLATION.md](docs/INSTALLATION.md) | Installing the server and client JARs, first run. |
+| [CONFIGURATION.md](docs/CONFIGURATION.md) | The configuration files, the unified settings screen, profiles, import/export, backups, automation, notifications and diagnostics. |
+| [CHAT-INTEGRATION.md](docs/CHAT-INTEGRATION.md) | How the chat bridge works and what is and is not forwarded. |
+| [DISCORD-SETUP.md](docs/DISCORD-SETUP.md) | Creating a webhook and a bot, and the exact values to paste into the config. |
+| [MATRIX-SETUP.md](docs/MATRIX-SETUP.md) | Creating a bot account, joining a room and obtaining an access token. |
+| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common problems and how to diagnose them. |
 
 ---
 

@@ -65,7 +65,7 @@ public final class ModularConfigLoader {
 
     private static Map<String, List<String>> modules() {
         Map<String, List<String>> map = new LinkedHashMap<>();
-        map.put("general.json", List.of("profile", "general", "announcements", "maintenance", "logging"));
+        map.put("general.json", List.of("configVersion", "profile", "general", "announcements", "maintenance", "logging"));
         map.put("moderation.json", List.of("moderation", "permissions"));
         map.put("anticheat.json", List.of("anticheat"));
         map.put("antidupe.json", List.of("antidupe"));
@@ -75,6 +75,9 @@ public final class ModularConfigLoader {
         map.put("protection.json", List.of("protection"));
         map.put("audit.json", List.of("audit"));
         map.put("storage.json", List.of("storage"));
+        map.put("backups.json", List.of("backups"));
+        map.put("automation.json", List.of("automation"));
+        map.put("notifications.json", List.of("notifications"));
         return java.util.Collections.unmodifiableMap(map);
     }
 
@@ -88,15 +91,37 @@ public final class ModularConfigLoader {
      */
     public static AdminConfig load(Path adminDir, Path legacyFile, ConfigLoader.ValidationReport report)
             throws IOException {
+        return load(adminDir, legacyFile, report, null);
+    }
+
+    /**
+     * Loads the whole configuration, optionally taking a backup first when a migration is needed.
+     *
+     * @param backupBeforeMigration invoked with the directory when the files are older than the
+     *                              current schema and are about to be rewritten; may be {@code null}
+     */
+    public static AdminConfig load(Path adminDir, Path legacyFile, ConfigLoader.ValidationReport report,
+            java.util.function.Consumer<Path> backupBeforeMigration) throws IOException {
         Files.createDirectories(adminDir);
         restrictDirectory(adminDir);
 
         boolean fresh = !Files.exists(adminDir.resolve("general.json"));
         AdminConfig config;
         if (fresh && legacyFile != null && Files.exists(legacyFile)) {
+            if (backupBeforeMigration != null) {
+                backupBeforeMigration.accept(adminDir);
+            }
             config = migrateLegacy(adminDir, legacyFile, report);
         } else {
             config = new AdminConfig();
+            // A module file written by an older build declares its version; if any is behind, the
+            // files are backed up before the modules are rewritten below.
+            int declared = readDeclaredVersion(adminDir);
+            if (declared > 0 && declared < ConfigLoader.CURRENT_VERSION && backupBeforeMigration != null) {
+                backupBeforeMigration.accept(adminDir);
+                report.add("backed up the configuration before migrating from schema " + declared
+                        + " to " + ConfigLoader.CURRENT_VERSION);
+            }
         }
 
         // Each module is read over the accumulating config, so a file that is absent keeps the
@@ -121,6 +146,23 @@ public final class ModularConfigLoader {
             config.profile = "balanced";
         }
         return config;
+    }
+
+    /** Reads the schema version declared in {@code general.json}, or 0 when it is absent. */
+    private static int readDeclaredVersion(Path adminDir) {
+        Path general = adminDir.resolve("general.json");
+        if (Files.notExists(general)) {
+            return 0;
+        }
+        try (Reader reader = Files.newBufferedReader(general, StandardCharsets.UTF_8)) {
+            JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
+            if (root.has("configVersion")) {
+                return root.get("configVersion").getAsInt();
+            }
+        } catch (IOException | RuntimeException ignored) {
+            // An unreadable file is handled by loadModule; treat it as unversioned here.
+        }
+        return 0;
     }
 
     /** Writes every module file from {@code config}. */
@@ -170,6 +212,11 @@ public final class ModularConfigLoader {
     /** Copies one named section from {@code partial} onto {@code target}, guarding against nulls. */
     private static void applySection(AdminConfig target, AdminConfig partial, String section) {
         switch (section) {
+            case "configVersion" -> {
+                if (partial.configVersion > 0) {
+                    target.configVersion = partial.configVersion;
+                }
+            }
             case "profile" -> {
                 if (partial.profile != null) {
                     target.profile = partial.profile;
@@ -255,6 +302,21 @@ public final class ModularConfigLoader {
                     target.storage = partial.storage;
                 }
             }
+            case "backups" -> {
+                if (partial.backups != null) {
+                    target.backups = partial.backups;
+                }
+            }
+            case "automation" -> {
+                if (partial.automation != null) {
+                    target.automation = partial.automation;
+                }
+            }
+            case "notifications" -> {
+                if (partial.notifications != null) {
+                    target.notifications = partial.notifications;
+                }
+            }
             default -> {
                 // Unknown section names are ignored; the file may be from a newer build.
             }
@@ -264,6 +326,7 @@ public final class ModularConfigLoader {
     /** Reads one named section off a config, used when writing a module file. */
     private static Object sectionValue(AdminConfig config, String section) {
         return switch (section) {
+            case "configVersion" -> config.configVersion;
             case "profile" -> config.profile;
             case "general" -> config.general;
             case "announcements" -> config.announcements;
@@ -281,6 +344,9 @@ public final class ModularConfigLoader {
             case "protection" -> config.protection;
             case "audit" -> config.audit;
             case "storage" -> config.storage;
+            case "backups" -> config.backups;
+            case "automation" -> config.automation;
+            case "notifications" -> config.notifications;
             default -> null;
         };
     }

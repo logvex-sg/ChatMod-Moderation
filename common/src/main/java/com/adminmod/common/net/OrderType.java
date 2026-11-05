@@ -90,7 +90,41 @@ public enum OrderType {
     /** Audit tab: write a search result to a file. Arguments: format, player, category, text. */
     AUDIT_EXPORT(41, PermissionLevel.OP_MANAGE),
     /** Audit tab: force a compression pass now. No arguments. */
-    AUDIT_COMPRESS(42, PermissionLevel.OP_MANAGE);
+    AUDIT_COMPRESS(42, PermissionLevel.OP_MANAGE),
+    /** Config tab: the whole settings catalogue plus live values. No arguments. */
+    SETTINGS_CATALOG(43, PermissionLevel.VIEW),
+    /** Config tab: change one setting. Arguments: path, value. */
+    SETTINGS_UPDATE(44, PermissionLevel.OP_MANAGE),
+    /** Config tab: apply a batch of changes atomically. Arguments: json (path to value object). */
+    SETTINGS_UPDATE_BATCH(45, PermissionLevel.OP_MANAGE),
+    /** Config tab: reset a setting, a category or a profile. Arguments: scope, name. */
+    SETTINGS_RESET(46, PermissionLevel.OP_MANAGE),
+    /** Config tab: recent configuration changes. No arguments. */
+    SETTINGS_HISTORY(47, PermissionLevel.VIEW),
+    /** Config tab: restore the previous value of the last change. No arguments. */
+    SETTINGS_ROLLBACK(48, PermissionLevel.OP_MANAGE),
+    /** Config tab: configuration diagnostics. No arguments. */
+    SETTINGS_DIAGNOSTICS(49, PermissionLevel.VIEW),
+    /** Profiles tab: list profiles and presets. No arguments. */
+    PROFILE_LIST(50, PermissionLevel.VIEW),
+    /** Profiles tab: preview what a profile would change. Arguments: name. */
+    PROFILE_PREVIEW(51, PermissionLevel.VIEW),
+    /** Profiles tab: apply a profile. Arguments: name. */
+    PROFILE_APPLY(52, PermissionLevel.OP_MANAGE),
+    /** Profiles tab: create a profile from the current configuration. Arguments: name, description. */
+    PROFILE_CREATE(53, PermissionLevel.OP_MANAGE),
+    /** Profiles tab: rename a profile. Arguments: oldName, newName. */
+    PROFILE_RENAME(54, PermissionLevel.OP_MANAGE),
+    /** Profiles tab: duplicate a profile. Arguments: source, newName. */
+    PROFILE_DUPLICATE(55, PermissionLevel.OP_MANAGE),
+    /** Profiles tab: delete a custom profile. Arguments: name. */
+    PROFILE_DELETE(56, PermissionLevel.OP_MANAGE),
+    /** Profiles tab: export a profile as JSON. Arguments: name. */
+    PROFILE_EXPORT(57, PermissionLevel.VIEW),
+    /** Profiles tab: import a profile. Arguments: json, applyNow. */
+    PROFILE_IMPORT(58, PermissionLevel.OP_MANAGE),
+    /** Config tab: back up the configuration now. No arguments. */
+    SETTINGS_BACKUP(59, PermissionLevel.OP_MANAGE);
 
     /** Coarse capability required to run the order; refined by the server permission model. */
     public enum PermissionLevel {

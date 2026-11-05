@@ -82,6 +82,7 @@ public final class AdminServerMod implements ModInitializer {
     private static PerformanceMonitor performance;
     private static DiagnosticsService diagnostics;
     private static AuditManager audit;
+    private static com.adminmod.server.settings.SettingsService settingsService;
     private static long startedAt = System.currentTimeMillis();
 
     /** Join time per player, so a leave can record how long the session lasted. */
@@ -283,7 +284,17 @@ public final class AdminServerMod implements ModInitializer {
 
         ConfigLoader.ValidationReport report = new ConfigLoader.ValidationReport();
         try {
-            config = ModularConfigLoader.load(configDirectory, configPath, report);
+            // A schema upgrade rewrites every module file, so the configuration is copied aside
+            // first; the default is to back up, and an operator who turned it off gets a migration
+            // with no safety net by choice.
+            config = ModularConfigLoader.load(configDirectory, configPath, report, dir -> {
+                try {
+                    new com.adminmod.common.settings.ConfigBackup(dir.resolve("backups"), 20)
+                            .snapshot(dir, "migration");
+                } catch (IOException e) {
+                    LOGGER.warn("Could not back up the configuration before migrating", e);
+                }
+            });
         } catch (IOException e) {
             LOGGER.error("Could not read the configuration under {}; falling back to defaults", configDirectory, e);
             config = new AdminConfig();
@@ -379,13 +390,88 @@ public final class AdminServerMod implements ModInitializer {
 
         ticker = new ServerTicker(config, sessions);
 
+        // The unified settings manager is built last: it owns the catalogue every subsystem's
+        // settings are described in, and its reload callback re-reads the configuration the same
+        // way a /adminmod reload does.
+        buildSettingsService();
+
         // Inbound readers are started only now: the sink broadcasts through the server, which
         // must be fully constructed before the first message can arrive.
         chatBridge.startInbound();
 
+        // A start-up backup is optional; when on it runs before anything else can rewrite a file.
+        if (config.automation.enabled && config.automation.autoBackupOnStart
+                && settingsService != null && config.backups.enabled) {
+            try {
+                settingsService.backups().snapshot(configDirectory, "startup");
+            } catch (IOException e) {
+                LOGGER.warn("Could not take the start-up configuration backup", e);
+            }
+        }
+
         LOGGER.info("ADMIN Mod {} ready (remote admin: {}, chat bridge: {}, inbound chat: {}, local chat: {})", VERSION,
                 config.remoteAdmin.enabled && credentials != null, config.chatBridge.enabled,
                 config.chatBridge.inbound.enabled, config.localChat.enabled);
+    }
+
+    /**
+     * Builds the settings manager and hands it to the request handler.
+     *
+     * <p>The registry is built from a default config so each spec captures its documented default,
+     * and the manager is given two callbacks: one to persist the configuration and one to reload the
+     * subsystems that observe it, which is the same sequence the console reload uses.
+     */
+    private void buildSettingsService() {
+        com.adminmod.common.settings.SettingRegistry registry =
+                com.adminmod.common.settings.SettingRegistry.createDefault();
+        Path profilesFile = configDirectory.resolve("profiles.json");
+        com.adminmod.common.settings.ProfileStore profileStore =
+                new com.adminmod.common.settings.ProfileStore(profilesFile);
+        try {
+            profileStore.load();
+        } catch (IOException e) {
+            LOGGER.warn("Could not read the profile store; starting with no custom profiles", e);
+        }
+        com.adminmod.common.settings.ConfigHistory history =
+                new com.adminmod.common.settings.ConfigHistory(64);
+        com.adminmod.common.settings.ConfigBackup backup =
+                new com.adminmod.common.settings.ConfigBackup(
+                        configDirectory.resolve("backups"), config.backups.maxBackups);
+        settingsService = new com.adminmod.server.settings.SettingsService(config, configDirectory,
+                registry, profileStore, history, backup,
+                updated -> {
+                    try {
+                        com.adminmod.common.config.ModularConfigLoader.save(configDirectory, updated);
+                    } catch (IOException e) {
+                        LOGGER.error("Could not persist the configuration", e);
+                    }
+                },
+                this::reloadSubsystems);
+        if (requestHandler != null) {
+            requestHandler.setSettings(settingsService);
+        }
+        for (String note : registry.problems()) {
+            LOGGER.info("Settings registry: {}", note);
+        }
+    }
+
+    /** Reloads the subsystems that read the configuration, after a settings change. */
+    private void reloadSubsystems() {
+        if (protection != null) {
+            protection.reload();
+        }
+        if (chatBridge != null) {
+            chatBridge.reload();
+        }
+        if (localChat != null) {
+            localChat.reload();
+        }
+        if (audit != null) {
+            audit.reload();
+        }
+        if (ticker != null) {
+            ticker.resetAnnouncements();
+        }
     }
 
     private void onServerStopping(MinecraftServer server) {
@@ -509,6 +595,9 @@ public final class AdminServerMod implements ModInitializer {
         target.logging = source.logging;
         target.storage = source.storage;
         target.audit = source.audit;
+        target.backups = source.backups;
+        target.automation = source.automation;
+        target.notifications = source.notifications;
     }
 
     public static Path configPath() {
