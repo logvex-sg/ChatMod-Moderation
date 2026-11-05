@@ -68,17 +68,17 @@ public final class ProfilesTab extends DashboardTab {
     @Override
     public void init() {
         int formY = y + height - ACTION_BAR - 108;
-        nameField = new DarkTextField(x + 12, formY + 4, 200, 18,
+        nameField = new DarkTextField(x + 12, formY + 16, 200, 18,
                 net.minecraft.text.Text.of("New profile name"));
         nameField.setMaxLength(48);
         screen.addWidget(nameField);
 
-        importField = new DarkTextField(x + 12, formY + 30, Math.max(160, width - 24), 18,
+        importField = new DarkTextField(x + 12, formY + 40, Math.max(160, width - 24), 18,
                 net.minecraft.text.Text.of("Paste an exported profile JSON here to import"));
         importField.setMaxLength(64_000);
         screen.addWidget(importField);
 
-        exportArea = new MultiLineTextField(x + 12, formY + 4, Math.max(160, width - 24), 62);
+        exportArea = new MultiLineTextField(x + 12, formY + 62, Math.max(160, width - 24), 42);
         exportArea.setVisible(false);
         screen.addWidget(exportArea);
 
@@ -354,8 +354,8 @@ public final class ProfilesTab extends DashboardTab {
     private void renderFormArea(DrawContext context) {
         int formY = y + height - ACTION_BAR - 108;
         panel(context, x + 4, formY, width - 8, 108);
-        text(context, "Create, export and import", x + 12, formY - 12, Theme.TEXT_DIM);
-        text(context, "Import JSON (also shows the last export)", x + 12, formY + 20, Theme.TEXT_MUTED);
+        text(context, "Create, export and import", x + 12, formY + 2, Theme.TEXT_DIM);
+        text(context, "Import JSON (also shows the last export)", x + 12, formY + 22, Theme.TEXT_MUTED);
     }
 
     private void renderActionBar(DrawContext context) {
